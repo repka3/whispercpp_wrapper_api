@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,6 +33,27 @@ class RepetitionReport:
     first_bad_index: int | None = None
     phrase: str = ""
     count: int = 0
+
+
+@dataclass(frozen=True)
+class TokenOverlap:
+    token_count: int
+    covered_count: int
+    prefix_count: int
+    suffix_count: int
+    longest_run: int
+
+    @property
+    def coverage(self) -> float:
+        if self.token_count <= 0:
+            return 0.0
+        return self.covered_count / self.token_count
+
+
+MIN_OVERLAP_TOKENS = 4
+DROP_OVERLAP_COVERAGE = 0.86
+BOUNDARY_CONTEXT_SECONDS = 60.0
+BOUNDARY_CONTEXT_SEGMENTS = 40
 
 
 def probe_duration_seconds(input_path: Path) -> float:
@@ -701,33 +723,89 @@ def merge_chunk_segments_with_audit(
     if not existing or overlap_end_seconds is None:
         return existing + incoming, None
 
-    recent_texts = {
-        _normalize_for_compare(item["transcript"])
-        for item in existing[-20:]
-        if _normalize_for_compare(item["transcript"])
-    }
     merged = list(existing)
     incoming_decisions: list[dict[str, Any]] = []
     dropped_segments: list[dict[str, Any]] = []
+    trimmed_segments: list[dict[str, Any]] = []
     kept_segments: list[dict[str, Any]] = []
     kept_overlap_segments: list[dict[str, Any]] = []
     kept_outside_overlap_segments: list[dict[str, Any]] = []
+    dropped_exact_count = 0
+    dropped_overlap_count = 0
+    trimmed_prefix_count = 0
+    trimmed_suffix_count = 0
+    kept_low_confidence_count = 0
     for segment in incoming:
         segment_text = _normalize_for_compare(segment["transcript"])
-        inside_overlap = segment["end"] <= overlap_end_seconds and segment["start"] >= overlap_start_seconds
-        if inside_overlap and segment_text in recent_texts:
+        overlap_relevant = segment["start"] < overlap_end_seconds and segment["end"] > overlap_start_seconds
+        context_segments = _boundary_context_segments(merged, overlap_start_seconds)
+        recent_texts = {
+            _normalize_for_compare(item["transcript"])
+            for item in context_segments
+            if _normalize_for_compare(item["transcript"])
+        }
+
+        if overlap_relevant and segment_text and segment_text in recent_texts:
             dropped_segments.append(_audit_segment(segment))
+            dropped_exact_count += 1
             incoming_decisions.append(
                 {
-                    "decision": "dropped_duplicate",
+                    "decision": "dropped_exact_duplicate",
                     "segment": _audit_segment(segment),
                 }
             )
             continue
-        decision = "kept" if inside_overlap else "kept_outside_overlap"
+
+        if overlap_relevant:
+            context_tokens = _comparison_context_tokens(context_segments)
+            segment_tokens = _tokenize_for_compare(segment["transcript"])
+            token_overlap = _measure_token_overlap(context_tokens, segment_tokens)
+            if _should_drop_overlap_duplicate(token_overlap):
+                dropped_segments.append(_audit_segment(segment))
+                dropped_overlap_count += 1
+                incoming_decisions.append(
+                    {
+                        "decision": "dropped_overlap_duplicate",
+                        "segment": _audit_segment(segment),
+                        "overlap": _audit_token_overlap(token_overlap),
+                    }
+                )
+                continue
+
+            trimmed_segment: dict[str, Any] | None = None
+            decision = "kept_low_confidence_overlap"
+            if _should_trim_duplicate_prefix(token_overlap):
+                trimmed_segment = _trim_segment_tokens(segment, trim_prefix_tokens=token_overlap.prefix_count)
+                decision = "trimmed_duplicate_prefix"
+                trimmed_prefix_count += 1
+            elif _should_trim_duplicate_suffix(token_overlap):
+                trimmed_segment = _trim_segment_tokens(segment, trim_suffix_tokens=token_overlap.suffix_count)
+                decision = "trimmed_duplicate_suffix"
+                trimmed_suffix_count += 1
+
+            if trimmed_segment is not None:
+                audited = _audit_segment(trimmed_segment)
+                trimmed_segments.append(audited)
+                kept_segments.append(audited)
+                kept_overlap_segments.append(audited)
+                incoming_decisions.append(
+                    {
+                        "decision": decision,
+                        "segment": audited,
+                        "original_segment": _audit_segment(segment),
+                        "overlap": _audit_token_overlap(token_overlap),
+                    }
+                )
+                merged.append(trimmed_segment)
+                continue
+
+            kept_low_confidence_count += 1
+        else:
+            decision = "kept_outside_overlap"
+
         audited = _audit_segment(segment)
         kept_segments.append(audited)
-        if inside_overlap:
+        if overlap_relevant:
             kept_overlap_segments.append(audited)
         else:
             kept_outside_overlap_segments.append(audited)
@@ -738,8 +816,6 @@ def merge_chunk_segments_with_audit(
             }
         )
         merged.append(segment)
-        if segment_text:
-            recent_texts.add(segment_text)
 
     audit = {
         "previous_chunk": previous_chunk_index,
@@ -751,18 +827,161 @@ def merge_chunk_segments_with_audit(
         "previous_tail": [_audit_segment(item) for item in existing[-8:]],
         "incoming_head": incoming_decisions[:8],
         "dropped_duplicates": dropped_segments,
+        "trimmed_duplicates": trimmed_segments,
         "kept_overlap": kept_overlap_segments,
         "kept_outside_overlap_head": kept_outside_overlap_segments[:8],
         "incoming_warning": incoming_warning,
         "counts": {
             "incoming": len(incoming),
             "dropped_duplicates": len(dropped_segments),
+            "dropped_exact_duplicates": dropped_exact_count,
+            "dropped_overlap_duplicates": dropped_overlap_count,
+            "trimmed_duplicate_prefix": trimmed_prefix_count,
+            "trimmed_duplicate_suffix": trimmed_suffix_count,
             "kept": len(kept_segments),
             "kept_overlap": len(kept_overlap_segments),
             "kept_outside_overlap": len(kept_outside_overlap_segments),
+            "kept_low_confidence_overlap": kept_low_confidence_count,
         },
     }
     return merged, audit
+
+
+def _boundary_context_segments(
+    segments: list[dict[str, Any]],
+    overlap_start_seconds: float,
+) -> list[dict[str, Any]]:
+    context_start = overlap_start_seconds - BOUNDARY_CONTEXT_SECONDS
+    nearby_segments = [item for item in segments if item["end"] >= context_start]
+    return nearby_segments[-BOUNDARY_CONTEXT_SEGMENTS:]
+
+
+def _comparison_context_tokens(segments: list[dict[str, Any]]) -> list[str]:
+    return _tokenize_for_compare(" ".join(item.get("transcript", "") for item in segments))
+
+
+def _tokenize_for_compare(text: str) -> list[str]:
+    normalized = _normalize_for_compare(text)
+    if not normalized:
+        return []
+    return normalized.split()
+
+
+def _measure_token_overlap(context_tokens: list[str], segment_tokens: list[str]) -> TokenOverlap:
+    if not context_tokens or not segment_tokens:
+        return TokenOverlap(
+            token_count=len(segment_tokens),
+            covered_count=0,
+            prefix_count=0,
+            suffix_count=0,
+            longest_run=0,
+        )
+
+    covered = [False] * len(segment_tokens)
+    longest_run = 0
+    matcher = SequenceMatcher(None, context_tokens, segment_tokens, autojunk=False)
+    for _context_start, segment_start, size in matcher.get_matching_blocks():
+        if size <= 0:
+            continue
+        longest_run = max(longest_run, size)
+        for index in range(segment_start, segment_start + size):
+            covered[index] = True
+
+    prefix_count = 0
+    for is_covered in covered:
+        if not is_covered:
+            break
+        prefix_count += 1
+
+    suffix_count = 0
+    for is_covered in reversed(covered):
+        if not is_covered:
+            break
+        suffix_count += 1
+
+    return TokenOverlap(
+        token_count=len(segment_tokens),
+        covered_count=sum(1 for is_covered in covered if is_covered),
+        prefix_count=prefix_count,
+        suffix_count=suffix_count,
+        longest_run=longest_run,
+    )
+
+
+def _should_drop_overlap_duplicate(token_overlap: TokenOverlap) -> bool:
+    if token_overlap.token_count < MIN_OVERLAP_TOKENS:
+        return False
+    return (
+        token_overlap.coverage >= DROP_OVERLAP_COVERAGE
+        and token_overlap.longest_run >= min(MIN_OVERLAP_TOKENS, token_overlap.token_count)
+    )
+
+
+def _should_trim_duplicate_prefix(token_overlap: TokenOverlap) -> bool:
+    if token_overlap.token_count <= MIN_OVERLAP_TOKENS:
+        return False
+    if token_overlap.prefix_count < MIN_OVERLAP_TOKENS:
+        return False
+    return token_overlap.prefix_count < token_overlap.token_count
+
+
+def _should_trim_duplicate_suffix(token_overlap: TokenOverlap) -> bool:
+    if token_overlap.token_count <= MIN_OVERLAP_TOKENS:
+        return False
+    if token_overlap.suffix_count < MIN_OVERLAP_TOKENS:
+        return False
+    return token_overlap.suffix_count < token_overlap.token_count
+
+
+def _trim_segment_tokens(
+    segment: dict[str, Any],
+    *,
+    trim_prefix_tokens: int = 0,
+    trim_suffix_tokens: int = 0,
+) -> dict[str, Any] | None:
+    token_spans = _token_spans(segment["transcript"])
+    token_count = len(token_spans)
+    keep_start_token = min(max(trim_prefix_tokens, 0), token_count)
+    keep_end_token = max(min(token_count - max(trim_suffix_tokens, 0), token_count), 0)
+    if token_count == 0 or keep_start_token >= keep_end_token:
+        return None
+
+    text_start = token_spans[keep_start_token][1]
+    text_end = token_spans[keep_end_token - 1][2]
+    transcript = segment["transcript"][text_start:text_end].strip()
+    if not transcript:
+        return None
+
+    start = float(segment["start"])
+    end = float(segment["end"])
+    duration = max(end - start, 0.0)
+    trimmed_start = start + duration * (keep_start_token / token_count)
+    trimmed_end = start + duration * (keep_end_token / token_count)
+
+    trimmed = dict(segment)
+    trimmed["start"] = round(trimmed_start, 3)
+    trimmed["end"] = round(max(trimmed_start, trimmed_end), 3)
+    trimmed["transcript"] = transcript
+    trimmed["words"] = []
+    return trimmed
+
+
+def _token_spans(text: str) -> list[tuple[str, int, int]]:
+    return [
+        (match.group(0).lower(), match.start(), match.end())
+        for match in re.finditer(r"[\w']+", text, flags=re.UNICODE)
+    ]
+
+
+def _audit_token_overlap(token_overlap: TokenOverlap) -> dict[str, Any]:
+    return {
+        "token_count": token_overlap.token_count,
+        "covered_count": token_overlap.covered_count,
+        "coverage": round(token_overlap.coverage, 3),
+        "prefix_count": token_overlap.prefix_count,
+        "suffix_count": token_overlap.suffix_count,
+        "longest_run": token_overlap.longest_run,
+    }
 
 
 def render_stitch_audit_markdown(audit: dict[str, Any]) -> str:
@@ -781,9 +1000,19 @@ def render_stitch_audit_markdown(audit: dict[str, Any]) -> str:
     lines.extend(["", "Incoming head:"])
     for item in audit.get("incoming_head") or []:
         segment = item["segment"]
-        lines.append(
-            f"- {item['decision']} [{segment['start_label']} -> {segment['end_label']}] {segment['transcript']}"
-        )
+        original_segment = item.get("original_segment")
+        if original_segment:
+            lines.append(
+                (
+                    f"- {item['decision']} "
+                    f"[{original_segment['start_label']} -> {original_segment['end_label']}] "
+                    f"=> [{segment['start_label']} -> {segment['end_label']}] {segment['transcript']}"
+                )
+            )
+        else:
+            lines.append(
+                f"- {item['decision']} [{segment['start_label']} -> {segment['end_label']}] {segment['transcript']}"
+            )
     if not audit.get("incoming_head"):
         lines.append("- none")
 
@@ -802,10 +1031,15 @@ def render_stitch_audit_markdown(audit: dict[str, Any]) -> str:
             "",
             "Decision:",
             (
-                f"Dropped {counts.get('dropped_duplicates', 0)} duplicate segment(s) from overlap, "
+                f"Dropped {counts.get('dropped_duplicates', 0)} duplicate segment(s) from overlap "
+                f"({counts.get('dropped_exact_duplicates', 0)} exact, "
+                f"{counts.get('dropped_overlap_duplicates', 0)} token-overlap), "
+                f"trimmed {counts.get('trimmed_duplicate_prefix', 0)} prefix and "
+                f"{counts.get('trimmed_duplicate_suffix', 0)} suffix duplicate segment(s), "
                 f"kept {counts.get('kept', 0)} incoming segment(s) "
                 f"({counts.get('kept_overlap', 0)} inside overlap, "
-                f"{counts.get('kept_outside_overlap', 0)} outside overlap)."
+                f"{counts.get('kept_outside_overlap', 0)} outside overlap, "
+                f"{counts.get('kept_low_confidence_overlap', 0)} low-confidence overlap)."
             ),
             "",
         ]
