@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Whisper.cpp Wrapper</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f6f7f9;
+        color: #15181e;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        width: min(1120px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 28px 0 40px;
+      }
+
+      header {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 22px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        line-height: 1.15;
+      }
+
+      h2 {
+        margin: 0 0 14px;
+        font-size: 17px;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        border-radius: 6px;
+        background: #176c72;
+        color: white;
+        padding: 10px 14px;
+        cursor: pointer;
+        font-weight: 650;
+      }
+
+      button.secondary {
+        background: #374151;
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
+        gap: 18px;
+        align-items: start;
+      }
+
+      section,
+      .panel {
+        background: white;
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+        padding: 18px;
+      }
+
+      form {
+        display: grid;
+        gap: 13px;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: #374151;
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      input {
+        width: 100%;
+        border: 1px solid #c6ceda;
+        border-radius: 6px;
+        padding: 9px 10px;
+        color: #111827;
+        background: #fff;
+      }
+
+      .fields {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .status-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .pill {
+        border-radius: 999px;
+        background: #e8eef5;
+        padding: 4px 9px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      progress {
+        width: 100%;
+        height: 14px;
+      }
+
+      pre {
+        min-height: 220px;
+        max-height: 620px;
+        overflow: auto;
+        margin: 14px 0 0;
+        padding: 14px;
+        border-radius: 8px;
+        background: #111827;
+        color: #e5e7eb;
+        font-size: 13px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .error {
+        display: none;
+        margin-top: 12px;
+        border: 1px solid #f2a0a0;
+        background: #fff2f2;
+        color: #8a1f1f;
+        border-radius: 6px;
+        padding: 10px;
+        overflow-wrap: anywhere;
+      }
+
+      @media (max-width: 840px) {
+        header,
+        .grid {
+          display: grid;
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .fields {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Whisper.cpp Wrapper</h1>
+        </div>
+        <button class="secondary" id="healthButton" type="button">Check health</button>
+      </header>
+
+      <div class="grid">
+        <section>
+          <h2>Submit transcription</h2>
+          <form id="uploadForm">
+            <label>
+              Audio or video file
+              <input id="fileInput" name="file" type="file" accept="audio/*,video/*" />
+            </label>
+
+            <label>
+              Local path
+              <input id="pathInput" name="path" type="text" placeholder="/home/transcribe/audio.mp3" />
+            </label>
+
+            <div class="fields">
+              <label>
+                Language
+                <input id="language" name="language" type="text" value="it" />
+              </label>
+              <label>
+                Beam size
+                <input id="beamSize" name="beam_size" type="number" min="1" value="3" />
+              </label>
+              <label>
+                Best of
+                <input id="bestOf" name="best_of" type="number" min="1" value="3" />
+              </label>
+              <label>
+                VAD threshold
+                <input id="vadThreshold" name="vad_threshold" type="number" min="0" max="1" step="0.01" value="0.5" />
+              </label>
+              <label>
+                VAD max speech seconds
+                <input id="vadMax" name="vad_max_speech_duration_s" type="number" min="1" value="30" />
+              </label>
+              <label>
+                VAD min silence ms
+                <input id="vadSilence" name="vad_min_silence_duration_ms" type="number" min="0" value="2000" />
+              </label>
+              <label>
+                VAD speech pad ms
+                <input id="vadPad" name="vad_speech_pad_ms" type="number" min="0" value="400" />
+              </label>
+            </div>
+
+            <div class="actions">
+              <button id="uploadButton" type="button">Upload file</button>
+              <button id="pathButton" type="button">Submit path</button>
+            </div>
+          </form>
+          <div class="error" id="errorBox"></div>
+        </section>
+
+        <div class="panel">
+          <div class="status-line">
+            <h2>Job</h2>
+            <span class="pill" id="statusPill">idle</span>
+          </div>
+          <progress id="progress" value="0" max="100"></progress>
+          <pre id="output">{}</pre>
+        </div>
+      </div>
+    </main>
+
+    <script>
+      const state = {
+        pollTimer: null,
+      };
+
+      const output = document.querySelector("#output");
+      const errorBox = document.querySelector("#errorBox");
+      const statusPill = document.querySelector("#statusPill");
+      const progress = document.querySelector("#progress");
+      const uploadButton = document.querySelector("#uploadButton");
+      const pathButton = document.querySelector("#pathButton");
+      const healthButton = document.querySelector("#healthButton");
+
+      function values() {
+        return {
+          language: document.querySelector("#language").value || "it",
+          beam_size: Number(document.querySelector("#beamSize").value || 3),
+          best_of: Number(document.querySelector("#bestOf").value || 3),
+          vad_threshold: Number(document.querySelector("#vadThreshold").value || 0.5),
+          vad_max_speech_duration_s: Number(document.querySelector("#vadMax").value || 30),
+          vad_min_silence_duration_ms: Number(document.querySelector("#vadSilence").value || 2000),
+          vad_speech_pad_ms: Number(document.querySelector("#vadPad").value || 400),
+        };
+      }
+
+      function setBusy(isBusy) {
+        uploadButton.disabled = isBusy;
+        pathButton.disabled = isBusy;
+      }
+
+      function showError(message) {
+        errorBox.style.display = message ? "block" : "none";
+        errorBox.textContent = message || "";
+      }
+
+      function render(payload) {
+        output.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      function setStatus(status, amount) {
+        statusPill.textContent = status;
+        progress.value = amount || 0;
+      }
+
+      async function requestJson(url, options) {
+        const response = await fetch(url, options);
+        const text = await response.text();
+        let payload = {};
+        if (text) {
+          try {
+            payload = JSON.parse(text);
+          } catch {
+            payload = { raw: text };
+          }
+        }
+        if (!response.ok) {
+          throw new Error(payload.detail || response.statusText);
+        }
+        return payload;
+      }
+
+      async function submitUpload() {
+        showError("");
+        const file = document.querySelector("#fileInput").files[0];
+        if (!file) {
+          showError("Choose a file first.");
+          return;
+        }
+
+        const form = new FormData();
+        form.append("file", file);
+        Object.entries(values()).forEach(([key, value]) => form.append(key, value));
+        await submitJob("/jobs/transcribe/upload", { method: "POST", body: form });
+      }
+
+      async function submitPath() {
+        showError("");
+        const path = document.querySelector("#pathInput").value.trim();
+        if (!path) {
+          showError("Enter a local path first.");
+          return;
+        }
+        await submitJob("/jobs/transcribe/path", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path, ...values() }),
+        });
+      }
+
+      async function submitJob(url, options) {
+        clearInterval(state.pollTimer);
+        setBusy(true);
+        try {
+          const job = await requestJson(url, options);
+          render(job);
+          setStatus(job.status, job.progress);
+          state.pollTimer = setInterval(() => poll(job.job_id), 1500);
+          await poll(job.job_id);
+        } catch (error) {
+          setBusy(false);
+          showError(error.message);
+        }
+      }
+
+      async function poll(jobId) {
+        try {
+          const job = await requestJson(`/jobs/${jobId}`);
+          render(job);
+          setStatus(job.status, job.progress);
+          if (job.status === "succeeded") {
+            clearInterval(state.pollTimer);
+            const result = await requestJson(`/jobs/${jobId}/result`);
+            render(result);
+            setStatus("succeeded", 100);
+            setBusy(false);
+          }
+          if (job.status === "failed") {
+            clearInterval(state.pollTimer);
+            showError(job.error || "Job failed.");
+            setBusy(false);
+          }
+        } catch (error) {
+          clearInterval(state.pollTimer);
+          showError(error.message);
+          setBusy(false);
+        }
+      }
+
+      async function checkHealth() {
+        showError("");
+        try {
+          const health = await requestJson("/health");
+          render(health);
+          setStatus(health.ok ? "healthy" : "unhealthy", health.ok ? 100 : 0);
+        } catch (error) {
+          showError(error.message);
+        }
+      }
+
+      uploadButton.addEventListener("click", submitUpload);
+      pathButton.addEventListener("click", submitPath);
+      healthButton.addEventListener("click", checkHealth);
+      checkHealth();
+    </script>
+  </body>
+</html>
