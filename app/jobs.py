@@ -53,6 +53,10 @@ class JobStore:
         vad_max_speech_duration_s: int,
         vad_min_silence_duration_ms: int,
         vad_speech_pad_ms: int,
+        chunking_mode: str,
+        chunk_seconds: int,
+        chunk_overlap_seconds: int,
+        repetition_guard: bool,
     ) -> dict[str, Any]:
         job_id, job_dir = self._new_job_dir()
         filename = Path(upload.filename or "upload").name
@@ -77,6 +81,10 @@ class JobStore:
             vad_max_speech_duration_s=vad_max_speech_duration_s,
             vad_min_silence_duration_ms=vad_min_silence_duration_ms,
             vad_speech_pad_ms=vad_speech_pad_ms,
+            chunking_mode=chunking_mode,
+            chunk_seconds=chunk_seconds,
+            chunk_overlap_seconds=chunk_overlap_seconds,
+            repetition_guard=repetition_guard,
         )
         self._write_metadata(job_dir, metadata)
         self.wakeup.set()
@@ -93,6 +101,10 @@ class JobStore:
         vad_max_speech_duration_s: int,
         vad_min_silence_duration_ms: int,
         vad_speech_pad_ms: int,
+        chunking_mode: str,
+        chunk_seconds: int,
+        chunk_overlap_seconds: int,
+        repetition_guard: bool,
     ) -> dict[str, Any]:
         if not path.exists() or not path.is_file():
             raise HTTPException(status_code=400, detail="Path does not exist or is not a file")
@@ -113,6 +125,10 @@ class JobStore:
             vad_max_speech_duration_s=vad_max_speech_duration_s,
             vad_min_silence_duration_ms=vad_min_silence_duration_ms,
             vad_speech_pad_ms=vad_speech_pad_ms,
+            chunking_mode=chunking_mode,
+            chunk_seconds=chunk_seconds,
+            chunk_overlap_seconds=chunk_overlap_seconds,
+            repetition_guard=repetition_guard,
         )
         self._write_metadata(job_dir, metadata)
         self.wakeup.set()
@@ -162,6 +178,14 @@ class JobStore:
                     vad_max_speech_duration_s=params["vad_max_speech_duration_s"],
                     vad_min_silence_duration_ms=params["vad_min_silence_duration_ms"],
                     vad_speech_pad_ms=params["vad_speech_pad_ms"],
+                    chunking_mode=params.get("chunking", {}).get("mode", self.settings.chunking_mode),
+                    chunk_seconds=params.get("chunking", {}).get("chunk_seconds", self.settings.chunk_seconds),
+                    chunk_overlap_seconds=params.get("chunking", {}).get(
+                        "overlap_seconds", self.settings.chunk_overlap_seconds
+                    ),
+                    repetition_guard=params.get("chunking", {}).get(
+                        "repetition_guard", self.settings.repetition_guard
+                    ),
                     set_progress=lambda progress: self._set_progress(job["job_id"], progress),
                 )
                 self._mark_succeeded(job["job_id"], result)
@@ -260,6 +284,10 @@ class JobStore:
         vad_max_speech_duration_s: int,
         vad_min_silence_duration_ms: int,
         vad_speech_pad_ms: int,
+        chunking_mode: str,
+        chunk_seconds: int,
+        chunk_overlap_seconds: int,
+        repetition_guard: bool,
     ) -> dict[str, Any]:
         now = utc_now()
         return {
@@ -284,6 +312,12 @@ class JobStore:
                 "vad_max_speech_duration_s": vad_max_speech_duration_s,
                 "vad_min_silence_duration_ms": vad_min_silence_duration_ms,
                 "vad_speech_pad_ms": vad_speech_pad_ms,
+                "chunking": {
+                    "mode": chunking_mode,
+                    "chunk_seconds": chunk_seconds,
+                    "overlap_seconds": chunk_overlap_seconds,
+                    "repetition_guard": repetition_guard,
+                },
             },
             "logs": {
                 "stdout": str(job_dir / "whisper_stdout.log"),

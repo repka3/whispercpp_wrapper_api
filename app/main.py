@@ -40,6 +40,10 @@ class PathTranscriptionRequest(BaseModel):
     vad_max_speech_duration_s: int = Field(default=30, ge=1)
     vad_min_silence_duration_ms: int = Field(default=2000, ge=0)
     vad_speech_pad_ms: int = Field(default=400, ge=0)
+    chunking_mode: str | None = Field(default=None, pattern="^(off|auto|always)$")
+    chunk_seconds: int | None = Field(default=None, ge=1)
+    chunk_overlap_seconds: int | None = Field(default=None, ge=0)
+    repetition_guard: bool | None = None
 
 
 @app.on_event("startup")
@@ -82,6 +86,11 @@ def health() -> dict:
             "language": settings.default_language,
             "beam_size": settings.beam_size,
             "best_of": settings.best_of,
+            "chunking_mode": settings.chunking_mode,
+            "chunk_threshold_seconds": settings.chunk_threshold_seconds,
+            "chunk_seconds": settings.chunk_seconds,
+            "chunk_overlap_seconds": settings.chunk_overlap_seconds,
+            "repetition_guard": settings.repetition_guard,
         },
     }
 
@@ -96,6 +105,10 @@ async def transcribe_upload(
     vad_max_speech_duration_s: Annotated[int, Form(ge=1)] = 30,
     vad_min_silence_duration_ms: Annotated[int, Form(ge=0)] = 2000,
     vad_speech_pad_ms: Annotated[int, Form(ge=0)] = 400,
+    chunking_mode: Annotated[str | None, Form(pattern="^(off|auto|always)$")] = None,
+    chunk_seconds: Annotated[int | None, Form(ge=1)] = None,
+    chunk_overlap_seconds: Annotated[int | None, Form(ge=0)] = None,
+    repetition_guard: Annotated[bool | None, Form()] = None,
 ) -> dict:
     metadata = await job_store.create_upload_job(
         upload=file,
@@ -106,6 +119,12 @@ async def transcribe_upload(
         vad_max_speech_duration_s=vad_max_speech_duration_s,
         vad_min_silence_duration_ms=vad_min_silence_duration_ms,
         vad_speech_pad_ms=vad_speech_pad_ms,
+        chunking_mode=chunking_mode or settings.chunking_mode,
+        chunk_seconds=chunk_seconds or settings.chunk_seconds,
+        chunk_overlap_seconds=(
+            settings.chunk_overlap_seconds if chunk_overlap_seconds is None else chunk_overlap_seconds
+        ),
+        repetition_guard=settings.repetition_guard if repetition_guard is None else repetition_guard,
     )
     return metadata
 
@@ -121,6 +140,14 @@ def transcribe_path(request: PathTranscriptionRequest) -> dict:
         vad_max_speech_duration_s=request.vad_max_speech_duration_s,
         vad_min_silence_duration_ms=request.vad_min_silence_duration_ms,
         vad_speech_pad_ms=request.vad_speech_pad_ms,
+        chunking_mode=request.chunking_mode or settings.chunking_mode,
+        chunk_seconds=request.chunk_seconds or settings.chunk_seconds,
+        chunk_overlap_seconds=(
+            settings.chunk_overlap_seconds
+            if request.chunk_overlap_seconds is None
+            else request.chunk_overlap_seconds
+        ),
+        repetition_guard=settings.repetition_guard if request.repetition_guard is None else request.repetition_guard,
     )
 
 

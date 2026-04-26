@@ -46,7 +46,8 @@
       }
 
       button,
-      input {
+      input,
+      select {
         font: inherit;
       }
 
@@ -97,7 +98,8 @@
         font-weight: 650;
       }
 
-      input {
+      input,
+      select {
         width: 100%;
         border: 1px solid #c6ceda;
         border-radius: 6px;
@@ -232,6 +234,29 @@
                 VAD speech pad ms
                 <input id="vadPad" name="vad_speech_pad_ms" type="number" min="0" value="400" />
               </label>
+              <label>
+                Chunking
+                <select id="chunkingMode" name="chunking_mode">
+                  <option value="auto" selected>auto</option>
+                  <option value="always">always</option>
+                  <option value="off">off</option>
+                </select>
+              </label>
+              <label>
+                Chunk minutes
+                <input id="chunkMinutes" name="chunk_minutes" type="number" min="1" value="30" />
+              </label>
+              <label>
+                Overlap seconds
+                <input id="chunkOverlap" name="chunk_overlap_seconds" type="number" min="0" value="30" />
+              </label>
+              <label>
+                Repetition guard
+                <select id="repetitionGuard" name="repetition_guard">
+                  <option value="true" selected>on</option>
+                  <option value="false">off</option>
+                </select>
+              </label>
             </div>
 
             <div class="actions">
@@ -275,6 +300,10 @@
           vad_max_speech_duration_s: Number(document.querySelector("#vadMax").value || 30),
           vad_min_silence_duration_ms: Number(document.querySelector("#vadSilence").value || 2000),
           vad_speech_pad_ms: Number(document.querySelector("#vadPad").value || 400),
+          chunking_mode: document.querySelector("#chunkingMode").value || "auto",
+          chunk_seconds: Number(document.querySelector("#chunkMinutes").value || 30) * 60,
+          chunk_overlap_seconds: Number(document.querySelector("#chunkOverlap").value || 30),
+          repetition_guard: document.querySelector("#repetitionGuard").value === "true",
         };
       }
 
