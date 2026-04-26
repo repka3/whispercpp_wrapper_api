@@ -298,6 +298,8 @@ def _run_chunked_transcription(
     chunks_dir.mkdir(parents=True, exist_ok=True)
     stdout_log = job_dir / "whisper_stdout.log"
     stderr_log = job_dir / "whisper_stderr.log"
+    stitch_debug_path = job_dir / "stitch_debug.md"
+    stitch_debug_json_path = job_dir / "stitch_debug.json"
     windows = build_chunk_windows(
         audio_duration_seconds=audio_duration_seconds,
         chunk_seconds=chunk_seconds,
@@ -307,11 +309,13 @@ def _run_chunked_transcription(
         raise TranscriptionError("Unable to build transcription chunks")
 
     all_segments: list[dict[str, Any]] = []
+    stitch_audits: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     retried_chunks: list[int] = []
     set_progress(5)
     _append_text(stdout_log, f"Chunked transcription enabled: {len(windows)} chunks.\n")
     _append_text(stderr_log, "Chunked mode writes detailed whisper logs under chunks/<index>/.\n")
+    _write_stitch_debug_header(stitch_debug_path, job_id=job_id)
 
     for window in windows:
         chunk_dir = chunks_dir / f"{window.index:04d}"
@@ -363,12 +367,18 @@ def _run_chunked_transcription(
         if warning and warning.get("first_bad_index") is not None:
             chunk_segments = chunk_segments[: int(warning["first_bad_index"])]
 
-        all_segments = merge_chunk_segments(
+        all_segments, audit = merge_chunk_segments_with_audit(
             all_segments,
             chunk_segments,
+            previous_chunk_index=window.index - 1,
+            next_chunk_index=window.index,
             overlap_start_seconds=window.start_seconds,
             overlap_end_seconds=window.start_seconds + chunk_overlap_seconds if window.index > 0 else None,
+            incoming_warning=warning,
         )
+        if audit is not None:
+            stitch_audits.append(audit)
+            _append_text(stitch_debug_path, render_stitch_audit_markdown(audit))
 
     set_progress(95)
     all_segments.sort(key=lambda item: (item["start"], item["end"]))
@@ -403,6 +413,8 @@ def _run_chunked_transcription(
                 "repetition_guard": repetition_guard,
                 "retried_chunks": retried_chunks,
                 "warning_count": len(warnings),
+                "stitch_debug_path": str(stitch_debug_path),
+                "stitch_debug_json_path": str(stitch_debug_json_path),
             },
         },
         "metrics": {
@@ -414,6 +426,15 @@ def _run_chunked_transcription(
     }
     if warnings:
         result["warnings"] = warnings
+    _write_json(
+        stitch_debug_json_path,
+        {
+            "job_id": job_id,
+            "chunk_count": len(windows),
+            "overlap_seconds": chunk_overlap_seconds,
+            "boundaries": stitch_audits,
+        },
+    )
     result_path = job_dir / "result.json"
     _write_json(result_path, result)
     return result
@@ -655,8 +676,30 @@ def merge_chunk_segments(
     overlap_start_seconds: float,
     overlap_end_seconds: float | None,
 ) -> list[dict[str, Any]]:
+    merged, _audit = merge_chunk_segments_with_audit(
+        existing,
+        incoming,
+        previous_chunk_index=None,
+        next_chunk_index=None,
+        overlap_start_seconds=overlap_start_seconds,
+        overlap_end_seconds=overlap_end_seconds,
+        incoming_warning=None,
+    )
+    return merged
+
+
+def merge_chunk_segments_with_audit(
+    existing: list[dict[str, Any]],
+    incoming: list[dict[str, Any]],
+    *,
+    previous_chunk_index: int | None,
+    next_chunk_index: int | None,
+    overlap_start_seconds: float,
+    overlap_end_seconds: float | None,
+    incoming_warning: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     if not existing or overlap_end_seconds is None:
-        return existing + incoming
+        return existing + incoming, None
 
     recent_texts = {
         _normalize_for_compare(item["transcript"])
@@ -664,15 +707,146 @@ def merge_chunk_segments(
         if _normalize_for_compare(item["transcript"])
     }
     merged = list(existing)
+    incoming_decisions: list[dict[str, Any]] = []
+    dropped_segments: list[dict[str, Any]] = []
+    kept_segments: list[dict[str, Any]] = []
+    kept_overlap_segments: list[dict[str, Any]] = []
+    kept_outside_overlap_segments: list[dict[str, Any]] = []
     for segment in incoming:
         segment_text = _normalize_for_compare(segment["transcript"])
         inside_overlap = segment["end"] <= overlap_end_seconds and segment["start"] >= overlap_start_seconds
         if inside_overlap and segment_text in recent_texts:
+            dropped_segments.append(_audit_segment(segment))
+            incoming_decisions.append(
+                {
+                    "decision": "dropped_duplicate",
+                    "segment": _audit_segment(segment),
+                }
+            )
             continue
+        decision = "kept" if inside_overlap else "kept_outside_overlap"
+        audited = _audit_segment(segment)
+        kept_segments.append(audited)
+        if inside_overlap:
+            kept_overlap_segments.append(audited)
+        else:
+            kept_outside_overlap_segments.append(audited)
+        incoming_decisions.append(
+            {
+                "decision": decision,
+                "segment": audited,
+            }
+        )
         merged.append(segment)
         if segment_text:
             recent_texts.add(segment_text)
-    return merged
+
+    audit = {
+        "previous_chunk": previous_chunk_index,
+        "next_chunk": next_chunk_index,
+        "overlap_start": round(overlap_start_seconds, 3),
+        "overlap_end": round(overlap_end_seconds, 3),
+        "overlap_start_label": format_timestamp(overlap_start_seconds),
+        "overlap_end_label": format_timestamp(overlap_end_seconds),
+        "previous_tail": [_audit_segment(item) for item in existing[-8:]],
+        "incoming_head": incoming_decisions[:8],
+        "dropped_duplicates": dropped_segments,
+        "kept_overlap": kept_overlap_segments,
+        "kept_outside_overlap_head": kept_outside_overlap_segments[:8],
+        "incoming_warning": incoming_warning,
+        "counts": {
+            "incoming": len(incoming),
+            "dropped_duplicates": len(dropped_segments),
+            "kept": len(kept_segments),
+            "kept_overlap": len(kept_overlap_segments),
+            "kept_outside_overlap": len(kept_outside_overlap_segments),
+        },
+    }
+    return merged, audit
+
+
+def render_stitch_audit_markdown(audit: dict[str, Any]) -> str:
+    previous_chunk = _chunk_label(audit.get("previous_chunk"))
+    next_chunk = _chunk_label(audit.get("next_chunk"))
+    counts = audit.get("counts", {})
+    lines = [
+        "",
+        f"## Chunk {previous_chunk} -> {next_chunk}",
+        "",
+        f"Overlap: {audit['overlap_start_label']} -> {audit['overlap_end_label']}",
+        "",
+        "Previous tail:",
+    ]
+    lines.extend(_render_segment_lines(audit.get("previous_tail") or []))
+    lines.extend(["", "Incoming head:"])
+    for item in audit.get("incoming_head") or []:
+        segment = item["segment"]
+        lines.append(
+            f"- {item['decision']} [{segment['start_label']} -> {segment['end_label']}] {segment['transcript']}"
+        )
+    if not audit.get("incoming_head"):
+        lines.append("- none")
+
+    warning = audit.get("incoming_warning")
+    if warning:
+        lines.extend(
+            [
+                "",
+                "Incoming warning:",
+                f"- {warning.get('type', 'warning')} chunk={warning.get('chunk')} phrase={warning.get('phrase', '')}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "Decision:",
+            (
+                f"Dropped {counts.get('dropped_duplicates', 0)} duplicate segment(s) from overlap, "
+                f"kept {counts.get('kept', 0)} incoming segment(s) "
+                f"({counts.get('kept_overlap', 0)} inside overlap, "
+                f"{counts.get('kept_outside_overlap', 0)} outside overlap)."
+            ),
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _render_segment_lines(segments: list[dict[str, Any]]) -> list[str]:
+    if not segments:
+        return ["- none"]
+    return [
+        f"- [{segment['start_label']} -> {segment['end_label']}] {segment['transcript']}"
+        for segment in segments
+    ]
+
+
+def _audit_segment(segment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "start": segment["start"],
+        "end": segment["end"],
+        "start_label": format_timestamp(segment["start"]),
+        "end_label": format_timestamp(segment["end"]),
+        "transcript": segment["transcript"],
+    }
+
+
+def _chunk_label(value: Any) -> str:
+    if isinstance(value, int) and value >= 0:
+        return f"{value:04d}"
+    return "n/a"
+
+
+def format_timestamp(seconds: float) -> str:
+    millis_total = max(int(round(seconds * 1000)), 0)
+    millis = millis_total % 1000
+    total_seconds = millis_total // 1000
+    secs = total_seconds % 60
+    minutes_total = total_seconds // 60
+    mins = minutes_total % 60
+    hours = minutes_total // 60
+    return f"{hours:02d}:{mins:02d}:{secs:02d}.{millis:03d}"
 
 
 def _should_chunk(*, mode: str, audio_duration_seconds: float, threshold_seconds: int) -> bool:
@@ -851,6 +1025,12 @@ def _tail_text(path: Path, limit: int = 4000) -> str:
 def _append_text(path: Path, text: str) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(text)
+
+
+def _write_stitch_debug_header(path: Path, *, job_id: str) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("# Stitch Debug\n\n")
+        handle.write(f"Job: `{job_id}`\n")
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
