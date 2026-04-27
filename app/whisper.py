@@ -962,7 +962,29 @@ def _trim_segment_tokens(
     trimmed["start"] = round(trimmed_start, 3)
     trimmed["end"] = round(max(trimmed_start, trimmed_end), 3)
     trimmed["transcript"] = transcript
-    trimmed["words"] = []
+    trimmed["words"] = _trim_words(
+        segment.get("words") or [],
+        keep_start_token=keep_start_token,
+        keep_end_token=keep_end_token,
+        start=trimmed["start"],
+        end=trimmed["end"],
+    )
+    return trimmed
+
+
+def _trim_words(
+    words: list[dict[str, Any]],
+    *,
+    keep_start_token: int,
+    keep_end_token: int,
+    start: float,
+    end: float,
+) -> list[dict[str, Any]]:
+    trimmed: list[dict[str, Any]] = []
+    for word in words[keep_start_token:keep_end_token]:
+        clipped = _clip_word(word, start=start, end=end)
+        if clipped is not None:
+            trimmed.append(clipped)
     return trimmed
 
 
@@ -1142,26 +1164,190 @@ def _extract_segments(
 ) -> list[dict[str, Any]]:
     source_segments = raw.get("transcription") or raw.get("segments") or []
     segments: list[dict[str, Any]] = []
+    token_time_origin: float | None = None
+    previous_token_end_raw: float | None = None
     for item in source_segments:
         segment_text = (item.get("text") or item.get("transcript") or "").strip()
         start, end = _extract_segment_times(item)
         start = start + offset_seconds
         end = end + offset_seconds
+        segment_time_origin = start
+        current_token_time_origin = None
+        token_start_raw, token_end_raw = _token_time_bounds(item)
+        if token_start_raw is not None and token_end_raw is not None:
+            token_looks_relative = token_start_raw + offset_seconds < segment_time_origin - 1.0
+            if token_looks_relative:
+                token_reset = previous_token_end_raw is not None and token_start_raw < previous_token_end_raw - 1.0
+                if token_time_origin is None or token_reset:
+                    token_time_origin = segment_time_origin
+                current_token_time_origin = token_time_origin
+                previous_token_end_raw = token_end_raw
+            else:
+                token_time_origin = None
+                previous_token_end_raw = None
         if clamp_start is not None:
             start = max(start, clamp_start)
         if clamp_end is not None:
             end = min(end, clamp_end)
         if end < start:
             end = start
+        words = _extract_words(
+            item,
+            offset_seconds=offset_seconds,
+            token_time_origin=current_token_time_origin,
+            clip_start=clamp_start,
+            clip_end=clamp_end,
+        )
         segments.append(
             {
                 "start": round(start, 3),
                 "end": round(end, 3),
                 "transcript": segment_text,
-                "words": [],
+                "words": words,
             }
         )
     return segments
+
+
+def _extract_words(
+    segment: dict[str, Any],
+    *,
+    offset_seconds: float,
+    token_time_origin: float | None,
+    clip_start: float | None,
+    clip_end: float | None,
+) -> list[dict[str, Any]]:
+    tokens = segment.get("tokens")
+    if not isinstance(tokens, list):
+        return []
+
+    words: list[dict[str, Any]] = []
+    current_parts: list[str] = []
+    current_start = 0.0
+    current_end = 0.0
+
+    def flush() -> None:
+        nonlocal current_parts, current_start, current_end
+        if not current_parts:
+            return
+        text = "".join(current_parts).strip()
+        current_parts = []
+        if not text:
+            return
+        word = _clip_word(
+            {
+                "word": text,
+                "start": round(current_start, 3),
+                "end": round(max(current_start, current_end), 3),
+            },
+            start=clip_start,
+            end=clip_end,
+        )
+        if word is not None:
+            words.append(word)
+
+    for token in tokens:
+        if not isinstance(token, dict):
+            continue
+        raw_text = token.get("text")
+        if not isinstance(raw_text, str):
+            continue
+        if _is_special_token(raw_text):
+            continue
+
+        piece = raw_text.strip()
+        if not piece:
+            continue
+        has_word_char = re.search(r"\w", piece, flags=re.UNICODE) is not None
+        is_apostrophe = piece in {"'", "’"}
+        if not has_word_char and not is_apostrophe:
+            continue
+        if is_apostrophe and not current_parts:
+            continue
+
+        token_start_raw, token_end_raw = _extract_segment_times(token)
+        if token_time_origin is None:
+            token_start = token_start_raw + offset_seconds
+            token_end = token_end_raw + offset_seconds
+        else:
+            token_start = token_start_raw + token_time_origin
+            token_end = token_end_raw + token_time_origin
+        if token_end < token_start:
+            token_end = token_start
+
+        starts_new_word = raw_text[0].isspace() and bool(current_parts) and has_word_char
+        if starts_new_word:
+            flush()
+
+        if not current_parts:
+            current_start = token_start
+            current_end = token_end
+        else:
+            current_start = min(current_start, token_start)
+            current_end = max(current_end, token_end)
+        current_parts.append(piece)
+
+    flush()
+    return words
+
+
+def _token_time_bounds(segment: dict[str, Any]) -> tuple[float | None, float | None]:
+    tokens = segment.get("tokens")
+    if not isinstance(tokens, list):
+        return None, None
+
+    starts: list[float] = []
+    ends: list[float] = []
+    for token in tokens:
+        if not isinstance(token, dict):
+            continue
+        raw_text = token.get("text")
+        if not isinstance(raw_text, str) or _is_special_token(raw_text):
+            continue
+        piece = raw_text.strip()
+        if not piece or re.search(r"\w", piece, flags=re.UNICODE) is None:
+            continue
+        token_start, token_end = _extract_segment_times(token)
+        starts.append(token_start)
+        ends.append(max(token_start, token_end))
+
+    if not starts:
+        return None, None
+    return min(starts), max(ends)
+
+
+def _is_special_token(text: str) -> bool:
+    stripped = text.strip()
+    return (stripped.startswith("[_") and stripped.endswith("]")) or (
+        stripped.startswith("<|") and stripped.endswith("|>")
+    )
+
+
+def _clip_word(
+    word: dict[str, Any],
+    *,
+    start: float | None,
+    end: float | None,
+) -> dict[str, Any] | None:
+    word_start = float(word.get("start", 0.0))
+    word_end = float(word.get("end", word_start))
+    if start is not None and word_end < start:
+        return None
+    if end is not None and word_start > end:
+        return None
+
+    clipped_start = word_start if start is None else max(word_start, start)
+    clipped_end = max(word_start, word_end) if end is None else min(max(word_start, word_end), end)
+    clipped_start = round(clipped_start, 3)
+    clipped_end = round(clipped_end, 3)
+    if clipped_end < clipped_start:
+        clipped_end = clipped_start
+
+    return {
+        "word": str(word.get("word", "")),
+        "start": clipped_start,
+        "end": clipped_end,
+    }
 
 
 def _detect_repetition_in_json(raw_path: Path) -> RepetitionReport:

@@ -3,6 +3,7 @@ import unittest
 from app.whisper import (
     build_chunk_windows,
     detect_repetition,
+    _extract_segments,
     format_timestamp,
     merge_chunk_segments,
     merge_chunk_segments_with_audit,
@@ -13,6 +14,18 @@ from app.whisper import (
 class WhisperHelperTests(unittest.TestCase):
     def _segment(self, start: float, end: float, transcript: str) -> dict:
         return {"start": start, "end": end, "transcript": transcript, "words": []}
+
+    def _word_segment(self, start: float, end: float, transcript: str) -> dict:
+        words = []
+        for index, word in enumerate(transcript.split()):
+            words.append(
+                {
+                    "word": word,
+                    "start": round(start + index, 3),
+                    "end": round(start + index + 0.5, 3),
+                }
+            )
+        return {"start": start, "end": end, "transcript": transcript, "words": words}
 
     def test_build_chunk_windows_with_partial_final_chunk(self) -> None:
         windows = build_chunk_windows(
@@ -191,6 +204,30 @@ class WhisperHelperTests(unittest.TestCase):
         self.assertEqual(merged[1]["transcript"], "nomi e cognomi e zone")
         self.assertGreater(merged[1]["start"], incoming[0]["start"])
 
+    def test_merge_trim_keeps_matching_word_slice(self) -> None:
+        existing = [
+            self._segment(0, 10, "Io credo non ho"),
+        ]
+        incoming = [
+            self._word_segment(9, 15, "Io credo non ho paura adesso"),
+        ]
+
+        merged, audit = merge_chunk_segments_with_audit(
+            existing,
+            incoming,
+            previous_chunk_index=0,
+            next_chunk_index=1,
+            overlap_start_seconds=9,
+            overlap_end_seconds=11,
+            incoming_warning=None,
+        )
+
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        self.assertEqual(audit["incoming_head"][0]["decision"], "trimmed_duplicate_prefix")
+        self.assertEqual(merged[1]["transcript"], "paura adesso")
+        self.assertEqual([item["word"] for item in merged[1]["words"]], ["paura", "adesso"])
+
     def test_merge_trims_partial_duplicate_suffix(self) -> None:
         existing = [
             self._segment(0, 10, "del nostro investimento quindi ha rimesso in ordine l'area"),
@@ -319,6 +356,88 @@ class WhisperHelperTests(unittest.TestCase):
         report = detect_repetition(segments)
 
         self.assertFalse(report.detected)
+
+    def test_extract_segments_populates_words_from_json_full_tokens(self) -> None:
+        raw = {
+            "transcription": [
+                {
+                    "offsets": {"from": 1000, "to": 5000},
+                    "text": " Buongiorno a tutti. L'assessore arriva.",
+                    "tokens": [
+                        {"text": " Bu", "offsets": {"from": 1000, "to": 1100}},
+                        {"text": "ong", "offsets": {"from": 1100, "to": 1250}},
+                        {"text": "ior", "offsets": {"from": 1250, "to": 1400}},
+                        {"text": "no", "offsets": {"from": 1400, "to": 1500}},
+                        {"text": " a", "offsets": {"from": 1600, "to": 1700}},
+                        {"text": " tutti", "offsets": {"from": 1800, "to": 2200}},
+                        {"text": ".", "offsets": {"from": 2200, "to": 2300}},
+                        {"text": " L", "offsets": {"from": 2500, "to": 2600}},
+                        {"text": "'", "offsets": {"from": 2600, "to": 2650}},
+                        {"text": "ass", "offsets": {"from": 2650, "to": 2800}},
+                        {"text": "essore", "offsets": {"from": 2800, "to": 3200}},
+                        {"text": " arriva", "offsets": {"from": 3500, "to": 4300}},
+                        {"text": "[_TT_1195]", "offsets": {"from": 4300, "to": 4300}},
+                    ],
+                }
+            ]
+        }
+
+        segments = _extract_segments(raw, offset_seconds=10)
+
+        self.assertEqual(segments[0]["start"], 11)
+        self.assertEqual(segments[0]["end"], 15)
+        self.assertEqual(
+            segments[0]["words"],
+            [
+                {"word": "Buongiorno", "start": 11, "end": 11.5},
+                {"word": "a", "start": 11.6, "end": 11.7},
+                {"word": "tutti", "start": 11.8, "end": 12.2},
+                {"word": "L'assessore", "start": 12.5, "end": 13.2},
+                {"word": "arriva", "start": 13.5, "end": 14.3},
+            ],
+        )
+
+    def test_extract_segments_clips_words_to_chunk_window(self) -> None:
+        raw = {
+            "transcription": [
+                {
+                    "offsets": {"from": 0, "to": 4000},
+                    "text": " Prima dentro dopo",
+                    "tokens": [
+                        {"text": " Prima", "offsets": {"from": 0, "to": 500}},
+                        {"text": " dentro", "offsets": {"from": 1000, "to": 2000}},
+                        {"text": " dopo", "offsets": {"from": 3000, "to": 4000}},
+                    ],
+                }
+            ]
+        }
+
+        segments = _extract_segments(raw, offset_seconds=100, clamp_start=101, clamp_end=102.4)
+
+        self.assertEqual(segments[0]["start"], 101)
+        self.assertEqual(segments[0]["end"], 102.4)
+        self.assertEqual(segments[0]["words"], [{"word": "dentro", "start": 101, "end": 102}])
+
+    def test_extract_segments_handles_vad_relative_token_offsets(self) -> None:
+        raw = {
+            "transcription": [
+                {
+                    "offsets": {"from": 90000, "to": 93000},
+                    "text": " Buongiorno",
+                    "tokens": [
+                        {"text": " Bu", "offsets": {"from": 500, "to": 600}},
+                        {"text": "ong", "offsets": {"from": 600, "to": 750}},
+                        {"text": "iorno", "offsets": {"from": 750, "to": 1100}},
+                    ],
+                }
+            ]
+        }
+
+        segments = _extract_segments(raw, offset_seconds=1000)
+
+        self.assertEqual(segments[0]["start"], 1090)
+        self.assertEqual(segments[0]["end"], 1093)
+        self.assertEqual(segments[0]["words"], [{"word": "Buongiorno", "start": 1090.5, "end": 1091.1}])
 
 
 if __name__ == "__main__":
