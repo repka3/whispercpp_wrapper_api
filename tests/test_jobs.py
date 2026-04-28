@@ -104,7 +104,8 @@ class JobStoreManagementTests(unittest.TestCase):
 
         self.assertIn("# Transcript: meeting.mp3", markdown)
         self.assertIn("- Model: model.bin", markdown)
-        self.assertIn("**[00:00:00.000 - 00:00:01.250]** Ciao mondo.", markdown)
+        self.assertIn("\n## Transcript\n\nCiao mondo.\n", markdown)
+        self.assertNotIn("00:00:00.000", markdown)
         with self.assertRaises(HTTPException) as context:
             self.store.get_transcript_markdown("ffffffffffffffffffffffffffffffff")
         self.assertEqual(context.exception.status_code, 409)

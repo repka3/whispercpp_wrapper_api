@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import HTTPException, UploadFile
 
 from .config import Settings
-from .whisper import format_timestamp, run_transcription
+from .whisper import run_transcription
 
 
 def utc_now() -> str:
@@ -481,11 +481,9 @@ def render_transcript_markdown(metadata: dict[str, Any], result: dict[str, Any])
     segments = result.get("segments") or []
     if segments:
         for segment in segments:
-            start = format_timestamp(float(segment.get("start") or 0))
-            end = format_timestamp(float(segment.get("end") or 0))
             transcript = str(segment.get("transcript") or "").strip()
             if transcript:
-                lines.append(f"**[{start} - {end}]** {transcript}")
+                lines.append(transcript)
                 lines.append("")
     else:
         text = str(result.get("text") or "").strip()
