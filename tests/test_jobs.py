@@ -110,6 +110,33 @@ class JobStoreManagementTests(unittest.TestCase):
             self.store.get_transcript_markdown("ffffffffffffffffffffffffffffffff")
         self.assertEqual(context.exception.status_code, 409)
 
+    def test_llm_prompt_is_compact_and_requires_success(self) -> None:
+        job_dir = self._write_job(
+            "11111111111111111111111111111111",
+            status="succeeded",
+            completed_at="2026-04-26T12:30:00+00:00",
+            filename="meeting.mp3",
+            model="model.bin",
+        )
+        self._write_result(job_dir, model="model.bin", text="Ciao   mondo.\n\nSeconda    frase.")
+        self._write_job(
+            "22222222222222222222222222222222",
+            status="failed",
+            completed_at="2026-04-26T12:31:00+00:00",
+            filename="failed.mp3",
+            error="decode failed",
+        )
+
+        prompt = self.store.get_llm_prompt("11111111111111111111111111111111")
+
+        self.assertIn("Summarize the following meeting transcript.", prompt)
+        self.assertIn("Transcript:\nCiao mondo. Seconda frase.\n", prompt)
+        self.assertNotIn("model.bin", prompt)
+        self.assertNotIn("00:00:00.000", prompt)
+        with self.assertRaises(HTTPException) as context:
+            self.store.get_llm_prompt("22222222222222222222222222222222")
+        self.assertEqual(context.exception.status_code, 409)
+
     def test_delete_job_removes_directory(self) -> None:
         job_dir = self._write_job(
             "99999999999999999999999999999999",
@@ -171,13 +198,13 @@ class JobStoreManagementTests(unittest.TestCase):
         self.store._write_metadata(job_dir, metadata)
         return job_dir
 
-    def _write_result(self, job_dir: Path, *, model: str) -> None:
+    def _write_result(self, job_dir: Path, *, model: str, text: str = "Ciao mondo.") -> None:
         result = {
             "job_id": job_dir.name,
             "engine": "whisper.cpp",
             "model": model,
             "language": "it",
-            "text": "Ciao mondo.",
+            "text": text,
             "segments": [
                 {
                     "start": 0,

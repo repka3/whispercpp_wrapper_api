@@ -177,6 +177,17 @@ def get_transcript_markdown(job_id: str) -> Response:
     )
 
 
+@app.get("/jobs/{job_id}/llm-prompt.txt")
+def get_llm_prompt(job_id: str) -> Response:
+    prompt = job_store.get_llm_prompt(job_id)
+    filename = job_store.llm_prompt_download_name(job_id)
+    return Response(
+        content=prompt,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.delete("/jobs/{job_id}", status_code=204)
 def delete_job(job_id: str) -> Response:
     job_store.delete_job(job_id)

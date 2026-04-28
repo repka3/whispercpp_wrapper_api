@@ -185,6 +185,10 @@ class JobStore:
         result = self.get_result(job_id)
         return render_transcript_markdown(metadata, result)
 
+    def get_llm_prompt(self, job_id: str) -> str:
+        result = self.get_result(job_id)
+        return render_llm_prompt(result)
+
     def transcript_download_name(self, job_id: str) -> str:
         metadata = self.get_job(job_id)
         source = metadata.get("source") or {}
@@ -193,6 +197,15 @@ class JobStore:
         if not safe_stem:
             safe_stem = "transcript"
         return f"{safe_stem}-{job_id[:8]}.md"
+
+    def llm_prompt_download_name(self, job_id: str) -> str:
+        metadata = self.get_job(job_id)
+        source = metadata.get("source") or {}
+        stem = Path(source.get("filename") or f"job-{job_id}").stem
+        safe_stem = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in stem).strip("-")
+        if not safe_stem:
+            safe_stem = "transcript"
+        return f"{safe_stem}-{job_id[:8]}-llm-prompt.txt"
 
     def delete_job(self, job_id: str) -> None:
         job_dir = self._job_dir(job_id)
@@ -491,6 +504,27 @@ def render_transcript_markdown(metadata: dict[str, Any], result: dict[str, Any])
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_llm_prompt(result: dict[str, Any]) -> str:
+    transcript = _compact_transcript_text(result)
+    return (
+        "Summarize the following meeting transcript. Return a concise meeting summary, "
+        "key decisions, action items with owners when mentioned, and open questions.\n\n"
+        "Transcript:\n"
+        f"{transcript}\n"
+    )
+
+
+def _compact_transcript_text(result: dict[str, Any]) -> str:
+    text = str(result.get("text") or "").strip()
+    if not text:
+        text = "\n".join(
+            str(segment.get("transcript") or "").strip()
+            for segment in result.get("segments") or []
+            if str(segment.get("transcript") or "").strip()
+        )
+    return " ".join(text.split())
 
 
 def _format_seconds(value: Any) -> str:

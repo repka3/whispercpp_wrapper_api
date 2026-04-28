@@ -593,6 +593,7 @@
           ${job.error ? `<div class="error" style="display:block;margin-top:0">${escapeHtml(job.error)}</div>` : ""}
           <div class="job-actions">
             <a class="button-link ${canDownload ? "" : "disabled"}" href="/jobs/${encodeURIComponent(job.job_id)}/transcript.md">Download transcript</a>
+            <a class="button-link secondary ${canDownload ? "" : "disabled"}" href="/jobs/${encodeURIComponent(job.job_id)}/llm-prompt.txt">Download LLM prompt</a>
             <button class="danger" type="button" data-delete-job="${escapeHtml(job.job_id)}">Delete</button>
           </div>
         `;
