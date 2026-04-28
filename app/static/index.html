@@ -21,16 +21,23 @@
       }
 
       main {
-        width: min(1120px, calc(100vw - 32px));
+        width: min(1280px, calc(100vw - 32px));
         margin: 0 auto;
         padding: 28px 0 40px;
       }
 
-      header {
+      header,
+      .toolbar,
+      .status-line,
+      .job-actions {
         display: flex;
-        align-items: end;
+        align-items: center;
         justify-content: space-between;
-        gap: 20px;
+        gap: 12px;
+      }
+
+      header {
+        align-items: end;
         margin-bottom: 22px;
       }
 
@@ -41,7 +48,7 @@
       }
 
       h2 {
-        margin: 0 0 14px;
+        margin: 0;
         font-size: 17px;
       }
 
@@ -51,7 +58,8 @@
         font: inherit;
       }
 
-      button {
+      button,
+      .button-link {
         border: 0;
         border-radius: 6px;
         background: #176c72;
@@ -59,15 +67,24 @@
         padding: 10px 14px;
         cursor: pointer;
         font-weight: 650;
+        text-decoration: none;
+        white-space: nowrap;
       }
 
-      button.secondary {
+      button.secondary,
+      .button-link.secondary {
         background: #374151;
       }
 
-      button:disabled {
+      button.danger {
+        background: #a63636;
+      }
+
+      button:disabled,
+      .button-link.disabled {
         cursor: wait;
         opacity: 0.6;
+        pointer-events: none;
       }
 
       .grid {
@@ -121,11 +138,7 @@
       }
 
       .status-line {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        margin-bottom: 12px;
+        margin: 18px 0 12px;
       }
 
       .pill {
@@ -136,14 +149,24 @@
         font-weight: 700;
       }
 
+      .pill.succeeded {
+        background: #dff4e8;
+        color: #17623a;
+      }
+
+      .pill.failed {
+        background: #fde2e2;
+        color: #8a1f1f;
+      }
+
       progress {
         width: 100%;
         height: 14px;
       }
 
       pre {
-        min-height: 220px;
-        max-height: 620px;
+        min-height: 180px;
+        max-height: 420px;
         overflow: auto;
         margin: 14px 0 0;
         padding: 14px;
@@ -167,7 +190,76 @@
         overflow-wrap: anywhere;
       }
 
-      @media (max-width: 840px) {
+      .jobs {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .job {
+        border: 1px solid #dde3ec;
+        border-radius: 8px;
+        padding: 12px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .job-head,
+      .job-meta {
+        display: grid;
+        gap: 8px;
+      }
+
+      .job-head {
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+      }
+
+      .filename {
+        font-weight: 750;
+        overflow-wrap: anywhere;
+      }
+
+      .muted {
+        color: #5f6b7a;
+        font-size: 13px;
+      }
+
+      .job-meta {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .metric {
+        min-width: 0;
+        border-left: 3px solid #cbd6e3;
+        padding-left: 8px;
+      }
+
+      .metric strong {
+        display: block;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+
+      .metric span {
+        color: #5f6b7a;
+        font-size: 12px;
+      }
+
+      .job-actions {
+        justify-content: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .empty {
+        color: #5f6b7a;
+        border: 1px dashed #c6ceda;
+        border-radius: 8px;
+        padding: 22px;
+        text-align: center;
+      }
+
+      @media (max-width: 980px) {
         header,
         .grid {
           display: grid;
@@ -175,9 +267,16 @@
         }
       }
 
-      @media (max-width: 560px) {
-        .fields {
+      @media (max-width: 680px) {
+        .fields,
+        .job-head,
+        .job-meta {
           grid-template-columns: 1fr;
+        }
+
+        .toolbar {
+          align-items: stretch;
+          flex-direction: column;
         }
       }
     </style>
@@ -265,16 +364,24 @@
             </div>
           </form>
           <div class="error" id="errorBox"></div>
-        </section>
 
-        <div class="panel">
           <div class="status-line">
-            <h2>Job</h2>
+            <h2>Current job</h2>
             <span class="pill" id="statusPill">idle</span>
           </div>
           <progress id="progress" value="0" max="100"></progress>
           <pre id="output">{}</pre>
-        </div>
+        </section>
+
+        <section>
+          <div class="toolbar">
+            <h2>Completed jobs</h2>
+            <button class="secondary" id="refreshJobsButton" type="button">Refresh</button>
+          </div>
+          <div class="jobs" id="jobsList">
+            <div class="empty">Loading jobs...</div>
+          </div>
+        </section>
       </div>
     </main>
 
@@ -290,6 +397,8 @@
       const uploadButton = document.querySelector("#uploadButton");
       const pathButton = document.querySelector("#pathButton");
       const healthButton = document.querySelector("#healthButton");
+      const refreshJobsButton = document.querySelector("#refreshJobsButton");
+      const jobsList = document.querySelector("#jobsList");
 
       function values() {
         return {
@@ -323,6 +432,7 @@
 
       function setStatus(status, amount) {
         statusPill.textContent = status;
+        statusPill.className = `pill ${status === "succeeded" || status === "failed" ? status : ""}`;
         progress.value = amount || 0;
       }
 
@@ -341,6 +451,17 @@
           throw new Error(payload.detail || response.statusText);
         }
         return payload;
+      }
+
+      async function requestNoContent(url, options) {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          let detail = response.statusText;
+          try {
+            detail = (await response.json()).detail || detail;
+          } catch {}
+          throw new Error(detail);
+        }
       }
 
       async function submitUpload() {
@@ -397,11 +518,13 @@
             render(result);
             setStatus("succeeded", 100);
             setBusy(false);
+            await loadJobs();
           }
           if (job.status === "failed") {
             clearInterval(state.pollTimer);
             showError(job.error || "Job failed.");
             setBusy(false);
+            await loadJobs();
           }
         } catch (error) {
           clearInterval(state.pollTimer);
@@ -421,10 +544,135 @@
         }
       }
 
+      async function loadJobs() {
+        refreshJobsButton.disabled = true;
+        try {
+          const jobs = await requestJson("/jobs");
+          renderJobs(jobs);
+        } catch (error) {
+          jobsList.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+        } finally {
+          refreshJobsButton.disabled = false;
+        }
+      }
+
+      function renderJobs(jobs) {
+        if (!jobs.length) {
+          jobsList.innerHTML = '<div class="empty">No completed jobs yet.</div>';
+          return;
+        }
+        jobsList.replaceChildren(...jobs.map(renderJob));
+      }
+
+      function renderJob(job) {
+        const item = document.createElement("article");
+        item.className = "job";
+        const source = job.source || {};
+        const params = job.params || {};
+        const chunking = params.chunking || {};
+        const metrics = job.metrics || {};
+        const canDownload = job.status === "succeeded" && job.has_result;
+        item.innerHTML = `
+          <div class="job-head">
+            <div>
+              <div class="filename">${escapeHtml(source.filename || job.job_id)}</div>
+              <div class="muted">${escapeHtml(formatDate(job.completed_at))} · ${escapeHtml(job.job_id)}</div>
+            </div>
+            <span class="pill ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>
+          </div>
+          <div class="job-meta">
+            ${metric("Model", job.model || "n/a")}
+            ${metric("Duration", formatDuration(metrics.audio_duration_seconds))}
+            ${metric("Elapsed", formatDuration(metrics.elapsed_seconds))}
+            ${metric("RTF / Speed", `${formatNumber(metrics.rtf)} / ${formatNumber(metrics.speedup)}x`)}
+            ${metric("Language", params.language || "n/a")}
+            ${metric("Chunking", chunking.mode || "n/a")}
+            ${metric("Size", formatBytes(source.size_bytes))}
+            ${metric("Source", source.kind || "n/a")}
+          </div>
+          ${job.error ? `<div class="error" style="display:block;margin-top:0">${escapeHtml(job.error)}</div>` : ""}
+          <div class="job-actions">
+            <a class="button-link ${canDownload ? "" : "disabled"}" href="/jobs/${encodeURIComponent(job.job_id)}/transcript.md">Download transcript</a>
+            <button class="danger" type="button" data-delete-job="${escapeHtml(job.job_id)}">Delete</button>
+          </div>
+        `;
+        item.querySelector("[data-delete-job]").addEventListener("click", () => deleteJob(job));
+        return item;
+      }
+
+      function metric(label, value) {
+        return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
+      }
+
+      async function deleteJob(job) {
+        const filename = job.source?.filename || job.job_id;
+        if (!confirm(`Delete job ${filename}? This removes the whole job directory.`)) {
+          return;
+        }
+        showError("");
+        try {
+          await requestNoContent(`/jobs/${encodeURIComponent(job.job_id)}`, { method: "DELETE" });
+          await loadJobs();
+        } catch (error) {
+          showError(error.message);
+        }
+      }
+
+      function formatDate(value) {
+        if (!value) {
+          return "unknown time";
+        }
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+          return value;
+        }
+        return date.toLocaleString();
+      }
+
+      function formatDuration(value) {
+        if (typeof value !== "number") {
+          return "n/a";
+        }
+        const totalSeconds = Math.max(0, Math.round(value));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+      }
+
+      function formatNumber(value) {
+        return typeof value === "number" ? value.toFixed(3) : "n/a";
+      }
+
+      function formatBytes(value) {
+        if (typeof value !== "number") {
+          return "n/a";
+        }
+        const units = ["B", "KB", "MB", "GB"];
+        let amount = value;
+        let unit = 0;
+        while (amount >= 1024 && unit < units.length - 1) {
+          amount /= 1024;
+          unit += 1;
+        }
+        return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
       uploadButton.addEventListener("click", submitUpload);
       pathButton.addEventListener("click", submitPath);
       healthButton.addEventListener("click", checkHealth);
+      refreshJobsButton.addEventListener("click", loadJobs);
       checkHealth();
+      loadJobs();
     </script>
   </body>
 </html>

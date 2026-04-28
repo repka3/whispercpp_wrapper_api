@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -151,6 +151,11 @@ def transcribe_path(request: PathTranscriptionRequest) -> dict:
     )
 
 
+@app.get("/jobs")
+def list_jobs() -> list[dict]:
+    return job_store.list_terminal_jobs()
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     return job_store.get_job(job_id)
@@ -159,6 +164,23 @@ def get_job(job_id: str) -> dict:
 @app.get("/jobs/{job_id}/result")
 def get_result(job_id: str) -> dict:
     return job_store.get_result(job_id)
+
+
+@app.get("/jobs/{job_id}/transcript.md")
+def get_transcript_markdown(job_id: str) -> Response:
+    markdown = job_store.get_transcript_markdown(job_id)
+    filename = job_store.transcript_download_name(job_id)
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.delete("/jobs/{job_id}", status_code=204)
+def delete_job(job_id: str) -> Response:
+    job_store.delete_job(job_id)
+    return Response(status_code=204)
 
 
 def _path_check(path: Path, executable: bool = False) -> dict:

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ from typing import Any
 from fastapi import HTTPException, UploadFile
 
 from .config import Settings
-from .whisper import run_transcription
+from .whisper import format_timestamp, run_transcription
 
 
 def utc_now() -> str:
@@ -141,6 +142,24 @@ class JobStore:
             raise HTTPException(status_code=404, detail="Job not found")
         return self._read_metadata(job_dir)
 
+    def list_terminal_jobs(self) -> list[dict[str, Any]]:
+        jobs = []
+        with self.lock:
+            for metadata_path in self.settings.jobs_dir.glob("*/metadata.json"):
+                try:
+                    metadata = self._read_metadata(metadata_path.parent)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if metadata.get("status") not in {"succeeded", "failed"}:
+                    continue
+                jobs.append(self._job_summary(metadata))
+
+        return sorted(
+            jobs,
+            key=lambda item: item.get("completed_at") or item.get("updated_at") or item.get("created_at") or "",
+            reverse=True,
+        )
+
     def get_result(self, job_id: str) -> dict[str, Any]:
         metadata = self.get_job(job_id)
         status = metadata.get("status")
@@ -154,6 +173,32 @@ class JobStore:
             raise HTTPException(status_code=500, detail="Result file is missing")
         with result_path.open("r", encoding="utf-8") as handle:
             return json.load(handle)
+
+    def get_transcript_markdown(self, job_id: str) -> str:
+        metadata = self.get_job(job_id)
+        status = metadata.get("status")
+        if status == "failed":
+            raise HTTPException(status_code=409, detail=metadata.get("error") or "Job failed")
+        if status != "succeeded":
+            raise HTTPException(status_code=409, detail=f"Job is {status}")
+
+        result = self.get_result(job_id)
+        return render_transcript_markdown(metadata, result)
+
+    def transcript_download_name(self, job_id: str) -> str:
+        metadata = self.get_job(job_id)
+        source = metadata.get("source") or {}
+        stem = Path(source.get("filename") or f"job-{job_id}").stem
+        safe_stem = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in stem).strip("-")
+        if not safe_stem:
+            safe_stem = "transcript"
+        return f"{safe_stem}-{job_id[:8]}.md"
+
+    def delete_job(self, job_id: str) -> None:
+        job_dir = self._job_dir(job_id)
+        if not (job_dir / "metadata.json").exists():
+            raise HTTPException(status_code=404, detail="Job not found")
+        shutil.rmtree(job_dir)
 
     def _worker_loop(self) -> None:
         while not self.stopped.is_set():
@@ -241,6 +286,7 @@ class JobStore:
             metadata["completed_at"] = utc_now()
             metadata["updated_at"] = utc_now()
             metadata["metrics"] = result.get("metrics", {})
+            metadata["model"] = result.get("model")
             self._write_metadata(job_dir, metadata)
             self._log_progress(job_id, 100)
 
@@ -351,6 +397,114 @@ class JobStore:
 
     def _log_progress(self, job_id: str, progress: int) -> None:
         self.logger.info("Job %s progress %s%%", job_id, progress)
+
+    def _job_summary(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        model = metadata.get("model")
+        if not model and metadata.get("status") == "succeeded":
+            model = self._read_result_model(metadata)
+        source = metadata.get("source") or {}
+
+        return {
+            "job_id": metadata.get("job_id"),
+            "status": metadata.get("status"),
+            "created_at": metadata.get("created_at"),
+            "updated_at": metadata.get("updated_at"),
+            "completed_at": metadata.get("completed_at"),
+            "source": {
+                "kind": source.get("kind"),
+                "filename": source.get("filename"),
+                "size_bytes": source.get("size_bytes"),
+            },
+            "params": metadata.get("params") or {},
+            "metrics": metadata.get("metrics") or {},
+            "model": model,
+            "error": metadata.get("error"),
+            "has_result": bool(metadata.get("result_path") and Path(metadata["result_path"]).exists()),
+        }
+
+    def _read_result_model(self, metadata: dict[str, Any]) -> str | None:
+        result_path = metadata.get("result_path")
+        if not result_path:
+            return None
+        try:
+            with Path(result_path).open("r", encoding="utf-8") as handle:
+                result = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+        model = result.get("model")
+        return model if isinstance(model, str) and model else None
+
+
+def render_transcript_markdown(metadata: dict[str, Any], result: dict[str, Any]) -> str:
+    source = metadata.get("source") or {}
+    params = metadata.get("params") or {}
+    metrics = result.get("metrics") or metadata.get("metrics") or {}
+    decode = result.get("decode") or {}
+    lines = [
+        f"# Transcript: {source.get('filename') or metadata.get('job_id')}",
+        "",
+        "## Job",
+        "",
+        f"- Job ID: {metadata.get('job_id')}",
+        f"- Status: {metadata.get('status')}",
+        f"- Source: {source.get('filename') or 'unknown'}",
+        f"- Completed at: {metadata.get('completed_at') or 'unknown'}",
+        f"- Engine: {result.get('engine') or 'unknown'}",
+        f"- Model: {result.get('model') or metadata.get('model') or 'unknown'}",
+        f"- Language: {result.get('language') or params.get('language') or 'unknown'}",
+        "",
+        "## Metrics",
+        "",
+        f"- Audio duration: {_format_seconds(metrics.get('audio_duration_seconds'))}",
+        f"- Elapsed: {_format_seconds(metrics.get('elapsed_seconds'))}",
+        f"- RTF: {_format_number(metrics.get('rtf'))}",
+        f"- Speedup: {_format_number(metrics.get('speedup'))}",
+        "",
+        "## Decode",
+        "",
+        f"- Beam size: {decode.get('beam_size', params.get('beam_size', 'unknown'))}",
+        f"- Best of: {decode.get('best_of', params.get('best_of', 'unknown'))}",
+    ]
+
+    chunking = decode.get("chunking") or params.get("chunking") or {}
+    if chunking:
+        lines.extend(
+            [
+                f"- Chunking mode: {chunking.get('mode', 'unknown')}",
+                f"- Chunk seconds: {chunking.get('chunk_seconds', 'unknown')}",
+                f"- Overlap seconds: {chunking.get('overlap_seconds', 'unknown')}",
+                f"- Repetition guard: {chunking.get('repetition_guard', 'unknown')}",
+            ]
+        )
+
+    lines.extend(["", "## Transcript", ""])
+    segments = result.get("segments") or []
+    if segments:
+        for segment in segments:
+            start = format_timestamp(float(segment.get("start") or 0))
+            end = format_timestamp(float(segment.get("end") or 0))
+            transcript = str(segment.get("transcript") or "").strip()
+            if transcript:
+                lines.append(f"**[{start} - {end}]** {transcript}")
+                lines.append("")
+    else:
+        text = str(result.get("text") or "").strip()
+        lines.append(text if text else "_No transcript text available._")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_seconds(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value:.3f}s"
+    return "unknown"
+
+
+def _format_number(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value:.4f}"
+    return "unknown"
 
 
 def re_is_hex_uuid(value: str) -> bool:
