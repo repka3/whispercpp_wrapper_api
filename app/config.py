@@ -60,7 +60,7 @@ def get_settings() -> Settings:
             os.getenv("WHISPERCPP_BIN", "/home/transcribe/whisper.cpp/build/bin/whisper-cli")
         ),
         whispercpp_model=Path(
-            os.getenv("WHISPERCPP_MODEL", "/home/transcribe/whisper.cpp/models/ggml-large-v3-turbo.bin")
+            os.getenv("WHISPERCPP_MODEL", "/home/transcribe/whisper.cpp/models/ggml-large-v3-q8_0.bin")
         ),
         whispercpp_vad_model=Path(
             os.getenv("WHISPERCPP_VAD_MODEL", "/home/transcribe/whisper.cpp/models/ggml-silero-v6.2.0.bin")
