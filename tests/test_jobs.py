@@ -15,8 +15,9 @@ class JobStoreManagementTests(unittest.TestCase):
         root = Path(self.temp.name)
         self.store = JobStore(
             Settings(
+                whispercpp_base_dir=root,
                 whispercpp_bin=root / "whisper-cli",
-                whispercpp_model=root / "ggml-test.bin",
+                whispercpp_models_dir=root,
                 whispercpp_vad_model=root / "vad.bin",
                 temp_dir=root,
                 default_language="it",

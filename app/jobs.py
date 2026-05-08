@@ -47,6 +47,7 @@ class JobStore:
         self,
         *,
         upload: UploadFile,
+        model: str,
         language: str,
         beam_size: int,
         best_of: int,
@@ -59,6 +60,7 @@ class JobStore:
         chunk_overlap_seconds: int,
         repetition_guard: bool,
     ) -> dict[str, Any]:
+        self.settings.resolve_model(model)
         job_id, job_dir = self._new_job_dir()
         filename = Path(upload.filename or "upload").name
         source_path = job_dir / filename
@@ -75,6 +77,7 @@ class JobStore:
             source_kind="upload",
             source_path=source_path,
             original_filename=filename,
+            model=model,
             language=language,
             beam_size=beam_size,
             best_of=best_of,
@@ -95,6 +98,7 @@ class JobStore:
         self,
         *,
         path: Path,
+        model: str,
         language: str,
         beam_size: int,
         best_of: int,
@@ -107,6 +111,7 @@ class JobStore:
         chunk_overlap_seconds: int,
         repetition_guard: bool,
     ) -> dict[str, Any]:
+        self.settings.resolve_model(model)
         if not path.exists() or not path.is_file():
             raise HTTPException(status_code=400, detail="Path does not exist or is not a file")
         if not os.access(path, os.R_OK):
@@ -119,6 +124,7 @@ class JobStore:
             source_kind="path",
             source_path=path,
             original_filename=path.name,
+            model=model,
             language=language,
             beam_size=beam_size,
             best_of=best_of,
@@ -229,6 +235,7 @@ class JobStore:
                     job_dir=job_dir,
                     input_path=Path(job["source"]["path"]),
                     settings=self.settings,
+                    model_path=self.settings.resolve_model(params["model"]),
                     language=params["language"],
                     beam_size=params["beam_size"],
                     best_of=params["best_of"],
@@ -336,6 +343,7 @@ class JobStore:
         source_kind: str,
         source_path: Path,
         original_filename: str,
+        model: str,
         language: str,
         beam_size: int,
         best_of: int,
@@ -364,6 +372,7 @@ class JobStore:
                 "size_bytes": source_path.stat().st_size,
             },
             "params": {
+                "model": model,
                 "language": language,
                 "beam_size": beam_size,
                 "best_of": best_of,

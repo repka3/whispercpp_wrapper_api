@@ -8,9 +8,12 @@ PORT="${PORT:-7600}"
 
 if [[ ! -x ".venv/bin/uvicorn" ]]; then
   echo "Missing .venv/bin/uvicorn. Create the venv and install requirements first:" >&2
-  echo "  python -m venv .venv" >&2
-  echo "  . .venv/bin/activate" >&2
-  echo "  pip install -r requirements.txt" >&2
+  echo "  ./install.sh" >&2
+  exit 1
+fi
+
+if [[ ! -f ".env" ]]; then
+  echo "Missing .env. Copy .env.example to .env and set WHISPERCPP_BASE_DIR." >&2
   exit 1
 fi
 

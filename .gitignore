@@ -21,6 +21,7 @@ jobs/
 # Local environment overrides
 .env
 .env.*
+!.env.example
 
 # Editor and OS noise
 .DS_Store

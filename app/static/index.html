@@ -301,10 +301,16 @@
 
             <label>
               Local path
-              <input id="pathInput" name="path" type="text" placeholder="/home/transcribe/audio.mp3" />
+              <input id="pathInput" name="path" type="text" placeholder="/absolute/path/to/audio.mp3" />
             </label>
 
             <div class="fields">
+              <label>
+                Model
+                <select id="model" name="model" required>
+                  <option value="">Loading models...</option>
+                </select>
+              </label>
               <label>
                 Language
                 <input id="language" name="language" type="text" value="it" />
@@ -399,9 +405,11 @@
       const healthButton = document.querySelector("#healthButton");
       const refreshJobsButton = document.querySelector("#refreshJobsButton");
       const jobsList = document.querySelector("#jobsList");
+      const modelSelect = document.querySelector("#model");
 
       function values() {
         return {
+          model: modelSelect.value,
           language: document.querySelector("#language").value || "it",
           beam_size: Number(document.querySelector("#beamSize").value || 3),
           best_of: Number(document.querySelector("#bestOf").value || 3),
@@ -466,6 +474,10 @@
 
       async function submitUpload() {
         showError("");
+        if (!modelSelect.value) {
+          showError("Choose a model first.");
+          return;
+        }
         const file = document.querySelector("#fileInput").files[0];
         if (!file) {
           showError("Choose a file first.");
@@ -480,6 +492,10 @@
 
       async function submitPath() {
         showError("");
+        if (!modelSelect.value) {
+          showError("Choose a model first.");
+          return;
+        }
         const path = document.querySelector("#pathInput").value.trim();
         if (!path) {
           showError("Enter a local path first.");
@@ -553,6 +569,24 @@
           jobsList.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
         } finally {
           refreshJobsButton.disabled = false;
+        }
+      }
+
+      async function loadModels() {
+        try {
+          const payload = await requestJson("/models");
+          const models = payload.models || [];
+          if (!models.length) {
+            modelSelect.replaceChildren(new Option("No models found", ""));
+            modelSelect.disabled = true;
+            return;
+          }
+          modelSelect.replaceChildren(...models.map((model) => new Option(model, model)));
+          modelSelect.disabled = false;
+        } catch (error) {
+          modelSelect.replaceChildren(new Option("Unable to load models", ""));
+          modelSelect.disabled = true;
+          showError(error.message);
         }
       }
 
@@ -672,6 +706,7 @@
       pathButton.addEventListener("click", submitPath);
       healthButton.addEventListener("click", checkHealth);
       refreshJobsButton.addEventListener("click", loadJobs);
+      loadModels();
       checkHealth();
       loadJobs();
     </script>

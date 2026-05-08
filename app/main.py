@@ -33,6 +33,7 @@ def install_access_log_filter() -> None:
 
 class PathTranscriptionRequest(BaseModel):
     path: str
+    model: str
     language: str | None = None
     beam_size: int | None = Field(default=None, ge=1)
     best_of: int | None = Field(default=None, ge=1)
@@ -49,6 +50,7 @@ class PathTranscriptionRequest(BaseModel):
 @app.on_event("startup")
 def startup() -> None:
     install_access_log_filter()
+    settings.validate_startup()
     job_store.initialize()
     job_store.start_worker()
 
@@ -67,11 +69,10 @@ def index() -> FileResponse:
 def health() -> dict:
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+    startup_checks = settings.startup_checks()
 
     checks = {
-        "whispercpp_bin": _path_check(settings.whispercpp_bin, executable=True),
-        "model": _path_check(settings.whispercpp_model),
-        "vad_model": _path_check(settings.whispercpp_vad_model),
+        **startup_checks,
         "temp_dir": {
             "path": str(settings.temp_dir),
             "ok": settings.temp_dir.exists() and settings.temp_dir.is_dir(),
@@ -82,6 +83,7 @@ def health() -> dict:
     return {
         "ok": all(item["ok"] for item in checks.values()),
         "checks": checks,
+        "models": settings.list_transcription_models(),
         "defaults": {
             "language": settings.default_language,
             "beam_size": settings.beam_size,
@@ -95,9 +97,15 @@ def health() -> dict:
     }
 
 
+@app.get("/models")
+def models() -> dict:
+    return {"models": settings.list_transcription_models()}
+
+
 @app.post("/jobs/transcribe/upload", status_code=202)
 async def transcribe_upload(
     file: Annotated[UploadFile, File()],
+    model: Annotated[str, Form()],
     language: Annotated[str | None, Form()] = None,
     beam_size: Annotated[int | None, Form(ge=1)] = None,
     best_of: Annotated[int | None, Form(ge=1)] = None,
@@ -112,6 +120,7 @@ async def transcribe_upload(
 ) -> dict:
     metadata = await job_store.create_upload_job(
         upload=file,
+        model=model,
         language=language or settings.default_language,
         beam_size=beam_size or settings.beam_size,
         best_of=best_of or settings.best_of,
@@ -133,6 +142,7 @@ async def transcribe_upload(
 def transcribe_path(request: PathTranscriptionRequest) -> dict:
     return job_store.create_path_job(
         path=Path(request.path),
+        model=request.model,
         language=request.language or settings.default_language,
         beam_size=request.beam_size or settings.beam_size,
         best_of=request.best_of or settings.best_of,
