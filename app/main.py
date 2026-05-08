@@ -37,7 +37,7 @@ class PathTranscriptionRequest(BaseModel):
     language: str | None = None
     beam_size: int | None = Field(default=None, ge=1)
     best_of: int | None = Field(default=None, ge=1)
-    vad_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    vad_threshold: float = Field(default=0.1, ge=0.0, le=1.0)
     vad_max_speech_duration_s: int = Field(default=30, ge=1)
     vad_min_silence_duration_ms: int = Field(default=2000, ge=0)
     vad_speech_pad_ms: int = Field(default=400, ge=0)
@@ -109,7 +109,7 @@ async def transcribe_upload(
     language: Annotated[str | None, Form()] = None,
     beam_size: Annotated[int | None, Form(ge=1)] = None,
     best_of: Annotated[int | None, Form(ge=1)] = None,
-    vad_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = 0.5,
+    vad_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = 0.1,
     vad_max_speech_duration_s: Annotated[int, Form(ge=1)] = 30,
     vad_min_silence_duration_ms: Annotated[int, Form(ge=0)] = 2000,
     vad_speech_pad_ms: Annotated[int, Form(ge=0)] = 400,

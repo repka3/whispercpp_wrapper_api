@@ -55,10 +55,20 @@ class ApiModelTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             main.PathTranscriptionRequest(path=str(self.audio))
 
+    def test_path_transcription_defaults_vad_threshold_to_point_one(self) -> None:
+        request = main.PathTranscriptionRequest(path=str(self.audio), model="ggml-large-v3.bin")
+
+        self.assertEqual(request.vad_threshold, 0.1)
+
     def test_path_transcription_rejects_unknown_model(self) -> None:
         with self._patch_app():
             with self.assertRaises(HTTPException) as context:
-                main.transcribe_path(main.PathTranscriptionRequest(path=str(self.audio), model="missing.bin"))
+                main.transcribe_path(
+                    main.PathTranscriptionRequest(
+                        path=str(self.audio),
+                        model="missing.bin",
+                    )
+                )
 
         self.assertEqual(context.exception.status_code, 400)
         self.assertIn("Unknown transcription model", context.exception.detail)
@@ -67,7 +77,10 @@ class ApiModelTests(unittest.TestCase):
         with self._patch_app():
             with self.assertRaises(HTTPException) as context:
                 main.transcribe_path(
-                    main.PathTranscriptionRequest(path=str(self.audio), model="../ggml-large-v3.bin")
+                    main.PathTranscriptionRequest(
+                        path=str(self.audio),
+                        model="../ggml-large-v3.bin",
+                    )
                 )
 
         self.assertEqual(context.exception.status_code, 400)

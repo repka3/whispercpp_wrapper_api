@@ -325,7 +325,7 @@
               </label>
               <label>
                 VAD threshold
-                <input id="vadThreshold" name="vad_threshold" type="number" min="0" max="1" step="0.01" value="0.5" />
+                <input id="vadThreshold" name="vad_threshold" type="number" min="0" max="1" step="0.01" value="0.1" />
               </label>
               <label>
                 VAD max speech seconds
@@ -413,7 +413,7 @@
           language: document.querySelector("#language").value || "it",
           beam_size: Number(document.querySelector("#beamSize").value || 3),
           best_of: Number(document.querySelector("#bestOf").value || 3),
-          vad_threshold: Number(document.querySelector("#vadThreshold").value || 0.5),
+          vad_threshold: Number(document.querySelector("#vadThreshold").value || 0.1),
           vad_max_speech_duration_s: Number(document.querySelector("#vadMax").value || 30),
           vad_min_silence_duration_ms: Number(document.querySelector("#vadSilence").value || 2000),
           vad_speech_pad_ms: Number(document.querySelector("#vadPad").value || 400),
