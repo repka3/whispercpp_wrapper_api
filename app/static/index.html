@@ -390,8 +390,7 @@
               <label>
                 Stitch method
                 <select id="stitchMethod" name="stitch_method">
-                  <option value="fuzzy" selected>fuzzy</option>
-                  <option value="safe_zone">safe zone</option>
+                  <option value="fuzzy" selected>Loading stitch methods...</option>
                 </select>
               </label>
               <label>
@@ -466,6 +465,7 @@
       const confirmClearJobsButton = document.querySelector("#confirmClearJobsButton");
       const jobsList = document.querySelector("#jobsList");
       const modelSelect = document.querySelector("#model");
+      const stitchMethodSelect = document.querySelector("#stitchMethod");
 
       function values() {
         return {
@@ -480,7 +480,7 @@
           chunking_mode: document.querySelector("#chunkingMode").value || "auto",
           chunk_seconds: Number(document.querySelector("#chunkMinutes").value || 30) * 60,
           chunk_overlap_seconds: Number(document.querySelector("#chunkOverlap").value || 30),
-          stitch_method: document.querySelector("#stitchMethod").value || "fuzzy",
+          stitch_method: stitchMethodSelect.value || "fuzzy",
           repetition_guard: document.querySelector("#repetitionGuard").value === "true",
         };
       }
@@ -680,6 +680,25 @@
         }
       }
 
+      async function loadStitchMethods() {
+        try {
+          const payload = await requestJson("/stitch-methods");
+          const methods = payload.methods || [];
+          const defaultMethod = payload.default || "fuzzy";
+          if (!methods.length) {
+            throw new Error("No stitch methods found.");
+          }
+          stitchMethodSelect.replaceChildren(
+            ...methods.map((method) => new Option(formatStitchMethod(method), method, false, method === defaultMethod))
+          );
+          stitchMethodSelect.disabled = false;
+        } catch (error) {
+          stitchMethodSelect.replaceChildren(new Option("fuzzy", "fuzzy", true, true));
+          stitchMethodSelect.disabled = false;
+          showError(error.message);
+        }
+      }
+
       function renderJobs(jobs) {
         if (!jobs.length) {
           jobsList.innerHTML = '<div class="empty">No completed jobs yet.</div>';
@@ -784,6 +803,10 @@
         return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
       }
 
+      function formatStitchMethod(value) {
+        return String(value).replaceAll("_", " ");
+      }
+
       function escapeHtml(value) {
         return String(value)
           .replaceAll("&", "&amp;")
@@ -801,6 +824,7 @@
       cancelClearJobsButton.addEventListener("click", closeClearJobsDialog);
       confirmClearJobsButton.addEventListener("click", clearAllJobs);
       loadModels();
+      loadStitchMethods();
       checkHealth();
       loadJobs();
     </script>

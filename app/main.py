@@ -8,6 +8,7 @@ from fastapi import FastAPI, File, Form, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from . import stitch_utils
 from .config import get_settings
 from .jobs import JobStore
 
@@ -15,6 +16,7 @@ from .jobs import JobStore
 settings = get_settings()
 job_store = JobStore(settings)
 app = FastAPI(title="Whisper.cpp Wrapper API", version="0.1.0")
+STITCH_METHOD_PATTERN = f"^({'|'.join(sorted(stitch_utils.STITCH_METHODS))})$"
 
 
 class StatusPollAccessLogFilter(logging.Filter):
@@ -44,7 +46,7 @@ class PathTranscriptionRequest(BaseModel):
     chunking_mode: str | None = Field(default=None, pattern="^(off|auto|always)$")
     chunk_seconds: int | None = Field(default=None, ge=1)
     chunk_overlap_seconds: int | None = Field(default=None, ge=0)
-    stitch_method: str | None = Field(default=None, pattern="^(fuzzy|safe_zone)$")
+    stitch_method: str | None = Field(default=None, pattern=STITCH_METHOD_PATTERN)
     repetition_guard: bool | None = None
 
 
@@ -104,6 +106,14 @@ def models() -> dict:
     return {"models": settings.list_transcription_models()}
 
 
+@app.get("/stitch-methods")
+def stitch_methods() -> dict:
+    return {
+        "methods": sorted(stitch_utils.STITCH_METHODS),
+        "default": settings.stitch_method,
+    }
+
+
 @app.post("/jobs/transcribe/upload", status_code=202)
 async def transcribe_upload(
     file: Annotated[UploadFile, File()],
@@ -118,7 +128,7 @@ async def transcribe_upload(
     chunking_mode: Annotated[str | None, Form(pattern="^(off|auto|always)$")] = None,
     chunk_seconds: Annotated[int | None, Form(ge=1)] = None,
     chunk_overlap_seconds: Annotated[int | None, Form(ge=0)] = None,
-    stitch_method: Annotated[str | None, Form(pattern="^(fuzzy|safe_zone)$")] = None,
+    stitch_method: Annotated[str | None, Form(pattern=STITCH_METHOD_PATTERN)] = None,
     repetition_guard: Annotated[bool | None, Form()] = None,
 ) -> dict:
     metadata = await job_store.create_upload_job(

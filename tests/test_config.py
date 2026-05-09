@@ -45,6 +45,31 @@ class SettingsTests(unittest.TestCase):
             ["ggml-large-v3-turbo.bin", "ggml-large-v3.bin"],
         )
 
+    def test_get_settings_validates_stitch_method_from_shared_choices(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "WHISPERCPP_BASE_DIR": str(self.base),
+                "WHISPERCPP_STITCH_METHOD": "safe_zone",
+            },
+            clear=False,
+        ):
+            settings = get_settings()
+
+        self.assertEqual(settings.stitch_method, "safe_zone")
+
+        with patch.dict(
+            os.environ,
+            {
+                "WHISPERCPP_BASE_DIR": str(self.base),
+                "WHISPERCPP_STITCH_METHOD": "missing",
+            },
+            clear=False,
+        ):
+            settings = get_settings()
+
+        self.assertEqual(settings.stitch_method, "fuzzy")
+
     def test_resolve_model_rejects_unknown_or_unsafe_names(self) -> None:
         settings = self._settings()
 

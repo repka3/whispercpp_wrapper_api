@@ -5,6 +5,8 @@ from pathlib import Path
 from fastapi import HTTPException
 from dotenv import load_dotenv
 
+from .stitch_utils import STITCH_METHODS
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -134,7 +136,7 @@ def get_settings() -> Settings:
         chunk_threshold_seconds=max(_env_int("WHISPERCPP_CHUNK_THRESHOLD_SECONDS", 1800), 1),
         chunk_seconds=max(_env_int("WHISPERCPP_CHUNK_SECONDS", 1800), 1),
         chunk_overlap_seconds=max(_env_int("WHISPERCPP_CHUNK_OVERLAP_SECONDS", 30), 0),
-        stitch_method=_env_choice("WHISPERCPP_STITCH_METHOD", "fuzzy", {"fuzzy", "safe_zone"}),
+        stitch_method=_env_choice("WHISPERCPP_STITCH_METHOD", "fuzzy", STITCH_METHODS),
         repetition_guard=_env_bool("WHISPERCPP_REPETITION_GUARD", True),
     )
 

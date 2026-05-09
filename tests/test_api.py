@@ -52,6 +52,12 @@ class ApiModelTests(unittest.TestCase):
 
         self.assertEqual(response, {"models": ["ggml-large-v3.bin"]})
 
+    def test_stitch_methods_endpoint_lists_available_methods_and_default(self) -> None:
+        with self._patch_app():
+            response = main.stitch_methods()
+
+        self.assertEqual(response, {"methods": ["fuzzy", "safe_zone"], "default": "fuzzy"})
+
     def test_path_transcription_requires_model(self) -> None:
         with self.assertRaises(ValidationError):
             main.PathTranscriptionRequest(path=str(self.audio))
