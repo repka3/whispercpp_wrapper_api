@@ -96,5 +96,13 @@ class ApiModelTests(unittest.TestCase):
         self.assertEqual(context.exception.status_code, 400)
         self.assertEqual(context.exception.detail, "Model must be a filename from /models")
 
+    def test_clear_jobs_endpoint_returns_no_content(self) -> None:
+        store = JobStore(self.settings)
+        with patch.multiple(main, settings=self.settings, job_store=store):
+            response = main.clear_jobs()
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(list(store.settings.jobs_dir.iterdir()), [])
+
     def _patch_app(self):
         return patch.multiple(main, settings=self.settings, job_store=JobStore(self.settings))

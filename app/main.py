@@ -171,6 +171,12 @@ def list_jobs() -> list[dict]:
     return job_store.list_terminal_jobs()
 
 
+@app.delete("/jobs", status_code=204)
+def clear_jobs() -> Response:
+    job_store.clear_jobs()
+    return Response(status_code=204)
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     return job_store.get_job(job_id)

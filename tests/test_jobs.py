@@ -151,6 +151,30 @@ class JobStoreManagementTests(unittest.TestCase):
 
         self.assertFalse(job_dir.exists())
 
+    def test_clear_jobs_removes_all_job_files(self) -> None:
+        first_job_dir = self._write_job(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            status="failed",
+            completed_at="2026-04-26T13:00:00+00:00",
+            filename="first.mp3",
+        )
+        second_job_dir = self._write_job(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            status="running",
+            completed_at=None,
+            filename="second.mp3",
+        )
+        loose_file = self.store.settings.jobs_dir / "scratch.tmp"
+        loose_file.write_text("temporary", encoding="utf-8")
+
+        self.store.clear_jobs()
+
+        self.assertTrue(self.store.settings.jobs_dir.exists())
+        self.assertFalse(first_job_dir.exists())
+        self.assertFalse(second_job_dir.exists())
+        self.assertFalse(loose_file.exists())
+        self.assertEqual(list(self.store.settings.jobs_dir.iterdir()), [])
+
     def _write_job(
         self,
         job_id: str,

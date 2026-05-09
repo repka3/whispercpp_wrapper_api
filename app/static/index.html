@@ -251,6 +251,38 @@
         flex-wrap: wrap;
       }
 
+      dialog {
+        width: min(520px, calc(100vw - 32px));
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+        padding: 0;
+        color: #15181e;
+        box-shadow: 0 20px 60px rgb(17 24 39 / 24%);
+      }
+
+      dialog::backdrop {
+        background: rgb(17 24 39 / 54%);
+      }
+
+      .modal {
+        display: grid;
+        gap: 14px;
+        padding: 18px;
+      }
+
+      .modal p {
+        margin: 0;
+        color: #374151;
+        line-height: 1.5;
+      }
+
+      .modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
       .empty {
         color: #5f6b7a;
         border: 1px dashed #c6ceda;
@@ -389,7 +421,10 @@
         <section>
           <div class="toolbar">
             <h2>Completed jobs</h2>
-            <button class="secondary" id="refreshJobsButton" type="button">Refresh</button>
+            <div class="actions">
+              <button class="danger" id="clearJobsButton" type="button">Clear all jobs</button>
+              <button class="secondary" id="refreshJobsButton" type="button">Refresh</button>
+            </div>
           </div>
           <div class="jobs" id="jobsList">
             <div class="empty">Loading jobs...</div>
@@ -397,6 +432,20 @@
         </section>
       </div>
     </main>
+
+    <dialog id="clearJobsDialog">
+      <div class="modal">
+        <h2>Clear all jobs?</h2>
+        <p>
+          This removes every job directory, including uploaded media, generated chunks, logs, transcripts,
+          and result files. This cannot be undone.
+        </p>
+        <div class="modal-actions">
+          <button class="secondary" id="cancelClearJobsButton" type="button">Cancel</button>
+          <button class="danger" id="confirmClearJobsButton" type="button">Clear all jobs</button>
+        </div>
+      </div>
+    </dialog>
 
     <script>
       const state = {
@@ -411,6 +460,10 @@
       const pathButton = document.querySelector("#pathButton");
       const healthButton = document.querySelector("#healthButton");
       const refreshJobsButton = document.querySelector("#refreshJobsButton");
+      const clearJobsButton = document.querySelector("#clearJobsButton");
+      const clearJobsDialog = document.querySelector("#clearJobsDialog");
+      const cancelClearJobsButton = document.querySelector("#cancelClearJobsButton");
+      const confirmClearJobsButton = document.querySelector("#confirmClearJobsButton");
       const jobsList = document.querySelector("#jobsList");
       const modelSelect = document.querySelector("#model");
 
@@ -580,6 +633,35 @@
         }
       }
 
+      function openClearJobsDialog() {
+        showError("");
+        clearJobsDialog.showModal();
+      }
+
+      function closeClearJobsDialog() {
+        clearJobsDialog.close();
+      }
+
+      async function clearAllJobs() {
+        showError("");
+        confirmClearJobsButton.disabled = true;
+        clearJobsButton.disabled = true;
+        try {
+          await requestNoContent("/jobs", { method: "DELETE" });
+          clearInterval(state.pollTimer);
+          setBusy(false);
+          setStatus("idle", 0);
+          render({});
+          closeClearJobsDialog();
+          await loadJobs();
+        } catch (error) {
+          showError(error.message);
+        } finally {
+          confirmClearJobsButton.disabled = false;
+          clearJobsButton.disabled = false;
+        }
+      }
+
       async function loadModels() {
         try {
           const payload = await requestJson("/models");
@@ -715,6 +797,9 @@
       pathButton.addEventListener("click", submitPath);
       healthButton.addEventListener("click", checkHealth);
       refreshJobsButton.addEventListener("click", loadJobs);
+      clearJobsButton.addEventListener("click", openClearJobsDialog);
+      cancelClearJobsButton.addEventListener("click", closeClearJobsDialog);
+      confirmClearJobsButton.addEventListener("click", clearAllJobs);
       loadModels();
       checkHealth();
       loadJobs();

@@ -218,10 +218,20 @@ class JobStore:
         return f"{safe_stem}-{job_id[:8]}-llm-prompt.txt"
 
     def delete_job(self, job_id: str) -> None:
-        job_dir = self._job_dir(job_id)
-        if not (job_dir / "metadata.json").exists():
-            raise HTTPException(status_code=404, detail="Job not found")
-        shutil.rmtree(job_dir)
+        with self.lock:
+            job_dir = self._job_dir(job_id)
+            if not (job_dir / "metadata.json").exists():
+                raise HTTPException(status_code=404, detail="Job not found")
+            shutil.rmtree(job_dir)
+
+    def clear_jobs(self) -> None:
+        with self.lock:
+            self.settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+            for path in self.settings.jobs_dir.iterdir():
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
 
     def _worker_loop(self) -> None:
         while not self.stopped.is_set():
@@ -289,6 +299,8 @@ class JobStore:
     def _set_progress(self, job_id: str, progress: int) -> None:
         with self.lock:
             job_dir = self._job_dir(job_id)
+            if not (job_dir / "metadata.json").exists():
+                return
             metadata = self._read_metadata(job_dir)
             if metadata.get("status") != "running":
                 return
@@ -304,6 +316,8 @@ class JobStore:
     def _mark_succeeded(self, job_id: str, result: dict[str, Any]) -> None:
         with self.lock:
             job_dir = self._job_dir(job_id)
+            if not (job_dir / "metadata.json").exists():
+                return
             metadata = self._read_metadata(job_dir)
             metadata["status"] = "succeeded"
             metadata["progress"] = 100
@@ -319,6 +333,8 @@ class JobStore:
     def _mark_failed(self, job_id: str, error: str) -> None:
         with self.lock:
             job_dir = self._job_dir(job_id)
+            if not (job_dir / "metadata.json").exists():
+                return
             metadata = self._read_metadata(job_dir)
             metadata["status"] = "failed"
             metadata["progress"] = min(int(metadata.get("progress") or 0), 99)
