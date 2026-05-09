@@ -51,6 +51,7 @@ class Settings:
     chunk_threshold_seconds: int
     chunk_seconds: int
     chunk_overlap_seconds: int
+    stitch_method: str
     repetition_guard: bool
 
     @property
@@ -133,6 +134,7 @@ def get_settings() -> Settings:
         chunk_threshold_seconds=max(_env_int("WHISPERCPP_CHUNK_THRESHOLD_SECONDS", 1800), 1),
         chunk_seconds=max(_env_int("WHISPERCPP_CHUNK_SECONDS", 1800), 1),
         chunk_overlap_seconds=max(_env_int("WHISPERCPP_CHUNK_OVERLAP_SECONDS", 30), 0),
+        stitch_method=_env_choice("WHISPERCPP_STITCH_METHOD", "fuzzy", {"fuzzy", "safe_zone"}),
         repetition_guard=_env_bool("WHISPERCPP_REPETITION_GUARD", True),
     )
 

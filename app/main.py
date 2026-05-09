@@ -44,6 +44,7 @@ class PathTranscriptionRequest(BaseModel):
     chunking_mode: str | None = Field(default=None, pattern="^(off|auto|always)$")
     chunk_seconds: int | None = Field(default=None, ge=1)
     chunk_overlap_seconds: int | None = Field(default=None, ge=0)
+    stitch_method: str | None = Field(default=None, pattern="^(fuzzy|safe_zone)$")
     repetition_guard: bool | None = None
 
 
@@ -92,6 +93,7 @@ def health() -> dict:
             "chunk_threshold_seconds": settings.chunk_threshold_seconds,
             "chunk_seconds": settings.chunk_seconds,
             "chunk_overlap_seconds": settings.chunk_overlap_seconds,
+            "stitch_method": settings.stitch_method,
             "repetition_guard": settings.repetition_guard,
         },
     }
@@ -116,6 +118,7 @@ async def transcribe_upload(
     chunking_mode: Annotated[str | None, Form(pattern="^(off|auto|always)$")] = None,
     chunk_seconds: Annotated[int | None, Form(ge=1)] = None,
     chunk_overlap_seconds: Annotated[int | None, Form(ge=0)] = None,
+    stitch_method: Annotated[str | None, Form(pattern="^(fuzzy|safe_zone)$")] = None,
     repetition_guard: Annotated[bool | None, Form()] = None,
 ) -> dict:
     metadata = await job_store.create_upload_job(
@@ -133,6 +136,7 @@ async def transcribe_upload(
         chunk_overlap_seconds=(
             settings.chunk_overlap_seconds if chunk_overlap_seconds is None else chunk_overlap_seconds
         ),
+        stitch_method=stitch_method or settings.stitch_method,
         repetition_guard=settings.repetition_guard if repetition_guard is None else repetition_guard,
     )
     return metadata
@@ -157,6 +161,7 @@ def transcribe_path(request: PathTranscriptionRequest) -> dict:
             if request.chunk_overlap_seconds is None
             else request.chunk_overlap_seconds
         ),
+        stitch_method=request.stitch_method or settings.stitch_method,
         repetition_guard=settings.repetition_guard if request.repetition_guard is None else request.repetition_guard,
     )
 

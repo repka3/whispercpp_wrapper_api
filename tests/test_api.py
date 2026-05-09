@@ -39,6 +39,7 @@ class ApiModelTests(unittest.TestCase):
             chunk_threshold_seconds=1800,
             chunk_seconds=1800,
             chunk_overlap_seconds=30,
+            stitch_method="fuzzy",
             repetition_guard=True,
         )
 
@@ -59,6 +60,15 @@ class ApiModelTests(unittest.TestCase):
         request = main.PathTranscriptionRequest(path=str(self.audio), model="ggml-large-v3.bin")
 
         self.assertEqual(request.vad_threshold, 0.1)
+
+    def test_path_transcription_accepts_stitch_method(self) -> None:
+        request = main.PathTranscriptionRequest(
+            path=str(self.audio),
+            model="ggml-large-v3.bin",
+            stitch_method="safe_zone",
+        )
+
+        self.assertEqual(request.stitch_method, "safe_zone")
 
     def test_path_transcription_rejects_unknown_model(self) -> None:
         with self._patch_app():

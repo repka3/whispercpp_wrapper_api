@@ -27,6 +27,7 @@ class JobStoreManagementTests(unittest.TestCase):
                 chunk_threshold_seconds=1800,
                 chunk_seconds=1800,
                 chunk_overlap_seconds=30,
+                stitch_method="fuzzy",
                 repetition_guard=True,
             )
         )

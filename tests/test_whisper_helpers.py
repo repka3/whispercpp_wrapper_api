@@ -4,6 +4,8 @@ from app.whisper import (
     build_chunk_windows,
     detect_repetition,
     _extract_segments,
+)
+from app.stitch_utils import (
     format_timestamp,
     merge_chunk_segments,
     merge_chunk_segments_with_audit,
@@ -338,6 +340,92 @@ class WhisperHelperTests(unittest.TestCase):
         self.assertIn("kept_low_confidence_overlap", markdown)
         self.assertIn("Frase nuova", markdown)
         self.assertIn("repetition_retry_succeeded", markdown)
+
+    def test_safe_zone_keeps_middle_segments_by_midpoint(self) -> None:
+        existing = [self._segment(0, 55, "Chunk precedente")]
+        incoming = [
+            self._segment(50, 54, "Bordo iniziale"),
+            self._segment(55, 65, "Centro utile"),
+            self._segment(114, 120, "Bordo finale"),
+        ]
+
+        merged, audit = merge_chunk_segments_with_audit(
+            existing,
+            incoming,
+            previous_chunk_index=0,
+            next_chunk_index=1,
+            overlap_start_seconds=50,
+            overlap_end_seconds=60,
+            overlap_seconds=10,
+            chunk_start_seconds=50,
+            chunk_end_seconds=120,
+            is_first_chunk=False,
+            is_last_chunk=False,
+            incoming_warning=None,
+            stitch_method="safe_zone",
+        )
+
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        self.assertEqual([item["transcript"] for item in merged], ["Chunk precedente", "Centro utile"])
+        self.assertEqual(audit["method"], "safe_zone")
+        self.assertEqual(audit["safe_start"], 55)
+        self.assertEqual(audit["safe_end"], 115)
+        self.assertEqual(audit["counts"]["kept"], 1)
+        self.assertEqual(audit["counts"]["dropped_safe_zone"], 2)
+
+    def test_safe_zone_first_chunk_drops_trailing_edge(self) -> None:
+        incoming = [
+            self._segment(0, 10, "Inizio"),
+            self._segment(114, 120, "Bordo finale"),
+        ]
+
+        merged, audit = merge_chunk_segments_with_audit(
+            [],
+            incoming,
+            previous_chunk_index=None,
+            next_chunk_index=0,
+            overlap_start_seconds=0,
+            overlap_end_seconds=None,
+            overlap_seconds=10,
+            chunk_start_seconds=0,
+            chunk_end_seconds=120,
+            is_first_chunk=True,
+            is_last_chunk=False,
+            incoming_warning=None,
+            stitch_method="safe_zone",
+        )
+
+        self.assertIsNone(audit)
+        self.assertEqual([item["transcript"] for item in merged], ["Inizio"])
+
+    def test_safe_zone_last_chunk_keeps_until_chunk_end(self) -> None:
+        existing = [self._segment(0, 55, "Chunk precedente")]
+        incoming = [
+            self._segment(55, 65, "Centro utile"),
+            self._segment(116, 120, "Fine utile"),
+        ]
+
+        merged, audit = merge_chunk_segments_with_audit(
+            existing,
+            incoming,
+            previous_chunk_index=0,
+            next_chunk_index=1,
+            overlap_start_seconds=50,
+            overlap_end_seconds=60,
+            overlap_seconds=10,
+            chunk_start_seconds=50,
+            chunk_end_seconds=120,
+            is_first_chunk=False,
+            is_last_chunk=True,
+            incoming_warning=None,
+            stitch_method="safe_zone",
+        )
+
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        self.assertEqual([item["transcript"] for item in merged], ["Chunk precedente", "Centro utile", "Fine utile"])
+        self.assertEqual(audit["safe_end"], 120)
 
     def test_format_timestamp(self) -> None:
         self.assertEqual(format_timestamp(3661.234), "01:01:01.234")

@@ -58,6 +58,7 @@ class JobStore:
         chunking_mode: str,
         chunk_seconds: int,
         chunk_overlap_seconds: int,
+        stitch_method: str,
         repetition_guard: bool,
     ) -> dict[str, Any]:
         self.settings.resolve_model(model)
@@ -88,6 +89,7 @@ class JobStore:
             chunking_mode=chunking_mode,
             chunk_seconds=chunk_seconds,
             chunk_overlap_seconds=chunk_overlap_seconds,
+            stitch_method=stitch_method,
             repetition_guard=repetition_guard,
         )
         self._write_metadata(job_dir, metadata)
@@ -109,6 +111,7 @@ class JobStore:
         chunking_mode: str,
         chunk_seconds: int,
         chunk_overlap_seconds: int,
+        stitch_method: str,
         repetition_guard: bool,
     ) -> dict[str, Any]:
         self.settings.resolve_model(model)
@@ -135,6 +138,7 @@ class JobStore:
             chunking_mode=chunking_mode,
             chunk_seconds=chunk_seconds,
             chunk_overlap_seconds=chunk_overlap_seconds,
+            stitch_method=stitch_method,
             repetition_guard=repetition_guard,
         )
         self._write_metadata(job_dir, metadata)
@@ -248,10 +252,12 @@ class JobStore:
                     chunk_overlap_seconds=params.get("chunking", {}).get(
                         "overlap_seconds", self.settings.chunk_overlap_seconds
                     ),
+                    stitch_method=params.get("chunking", {}).get("stitch_method", self.settings.stitch_method),
                     repetition_guard=params.get("chunking", {}).get(
                         "repetition_guard", self.settings.repetition_guard
                     ),
                     set_progress=lambda progress: self._set_progress(job["job_id"], progress),
+                    log_stitch=lambda event: self._log_stitch_event(job["job_id"], event),
                 )
                 self._mark_succeeded(job["job_id"], result)
             except Exception as exc:
@@ -354,6 +360,7 @@ class JobStore:
         chunking_mode: str,
         chunk_seconds: int,
         chunk_overlap_seconds: int,
+        stitch_method: str,
         repetition_guard: bool,
     ) -> dict[str, Any]:
         now = utc_now()
@@ -384,6 +391,7 @@ class JobStore:
                     "mode": chunking_mode,
                     "chunk_seconds": chunk_seconds,
                     "overlap_seconds": chunk_overlap_seconds,
+                    "stitch_method": stitch_method,
                     "repetition_guard": repetition_guard,
                 },
             },
@@ -419,6 +427,46 @@ class JobStore:
 
     def _log_progress(self, job_id: str, progress: int) -> None:
         self.logger.info("Job %s progress %s%%", job_id, progress)
+
+    def _log_stitch_event(self, job_id: str, event: dict[str, Any]) -> None:
+        event_type = event.get("type")
+        if event_type == "chunking_started":
+            self.logger.info(
+                "Job %s stitch start: chunks=%s chunk_seconds=%s overlap_seconds=%s method=%s",
+                job_id,
+                event.get("chunk_count"),
+                event.get("chunk_seconds"),
+                event.get("overlap_seconds"),
+                event.get("stitch_method"),
+            )
+            return
+        if event_type == "boundary":
+            counts = event.get("counts") or {}
+            self.logger.info(
+                (
+                    "Job %s stitch boundary %s->%s %s-%s method=%s "
+                    "incoming=%s kept=%s dropped=%s trimmed=%s low_confidence=%s"
+                ),
+                job_id,
+                event.get("previous_chunk"),
+                event.get("next_chunk"),
+                event.get("overlap_start_label"),
+                event.get("overlap_end_label"),
+                event.get("method"),
+                counts.get("incoming", 0),
+                counts.get("kept", 0),
+                counts.get("dropped_duplicates", 0) + counts.get("dropped_safe_zone", 0),
+                counts.get("trimmed_duplicate_prefix", 0) + counts.get("trimmed_duplicate_suffix", 0),
+                counts.get("kept_low_confidence_overlap", 0),
+            )
+            return
+        if event_type == "chunking_finished":
+            self.logger.info(
+                "Job %s stitch finished: segments=%s debug_json=%s",
+                job_id,
+                event.get("segment_count"),
+                event.get("stitch_debug_json_path"),
+            )
 
     def _job_summary(self, metadata: dict[str, Any]) -> dict[str, Any]:
         model = metadata.get("model")

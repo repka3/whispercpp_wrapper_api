@@ -356,6 +356,13 @@
                 <input id="chunkOverlap" name="chunk_overlap_seconds" type="number" min="0" value="30" />
               </label>
               <label>
+                Stitch method
+                <select id="stitchMethod" name="stitch_method">
+                  <option value="fuzzy" selected>fuzzy</option>
+                  <option value="safe_zone">safe zone</option>
+                </select>
+              </label>
+              <label>
                 Repetition guard
                 <select id="repetitionGuard" name="repetition_guard">
                   <option value="true" selected>on</option>
@@ -420,6 +427,7 @@
           chunking_mode: document.querySelector("#chunkingMode").value || "auto",
           chunk_seconds: Number(document.querySelector("#chunkMinutes").value || 30) * 60,
           chunk_overlap_seconds: Number(document.querySelector("#chunkOverlap").value || 30),
+          stitch_method: document.querySelector("#stitchMethod").value || "fuzzy",
           repetition_guard: document.querySelector("#repetitionGuard").value === "true",
         };
       }
@@ -621,6 +629,7 @@
             ${metric("RTF / Speed", `${formatNumber(metrics.rtf)} / ${formatNumber(metrics.speedup)}x`)}
             ${metric("Language", params.language || "n/a")}
             ${metric("Chunking", chunking.mode || "n/a")}
+            ${metric("Stitch", chunking.stitch_method || "n/a")}
             ${metric("Size", formatBytes(source.size_bytes))}
             ${metric("Source", source.kind || "n/a")}
           </div>
