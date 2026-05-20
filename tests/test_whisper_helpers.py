@@ -5,8 +5,12 @@ from unittest.mock import patch
 from app.whisper import (
     build_stitch_variants,
     build_chunk_windows,
+    build_chunk_window_plan,
+    build_silence_aligned_chunk_windows,
     detect_repetition,
+    parse_vad_speech_segments,
     run_transcription,
+    VadSpeechSegment,
     _extract_segments,
 )
 from app.config import Settings
@@ -55,6 +59,126 @@ class WhisperHelperTests(unittest.TestCase):
         )
 
         self.assertEqual([item.start_seconds for item in windows], [0, 1])
+
+    def test_parse_vad_speech_segments_reads_helper_output(self) -> None:
+        segments = parse_vad_speech_segments(
+            "\n".join(
+                [
+                    "Detected 2 speech segments:",
+                    "Speech segment 0: start = 0.29, end = 2.21",
+                    "Speech segment 1: start = 3.30, end = 3.77",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            segments,
+            [
+                VadSpeechSegment(start_seconds=0.29, end_seconds=2.21),
+                VadSpeechSegment(start_seconds=3.3, end_seconds=3.77),
+            ],
+        )
+
+    def test_silence_aligned_chunk_windows_use_absolute_targets_without_drift(self) -> None:
+        windows, decisions = build_silence_aligned_chunk_windows(
+            audio_duration_seconds=750,
+            chunk_seconds=300,
+            speech_segments=[
+                VadSpeechSegment(start_seconds=0, end_seconds=390),
+                VadSpeechSegment(start_seconds=410, end_seconds=590),
+                VadSpeechSegment(start_seconds=610, end_seconds=750),
+            ],
+            silence_min_duration_ms=1000,
+        )
+
+        self.assertEqual([item.selected_seconds for item in decisions], [400, 600])
+        self.assertEqual([item.target_seconds for item in decisions], [300, 600])
+        self.assertEqual([item.start_seconds for item in windows], [0, 400, 600])
+        self.assertEqual([item.duration_seconds for item in windows], [400, 200, 150])
+
+    def test_chunk_window_plan_uses_vad_silence_with_zero_overlap(self) -> None:
+        import tempfile
+
+        vad_output = "\n".join(
+            [
+                "Detected 3 speech segments:",
+                "Speech segment 0: start = 0.00, end = 390.00",
+                "Speech segment 1: start = 410.00, end = 590.00",
+                "Speech segment 2: start = 610.00, end = 750.00",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "app.whisper.run_vad_speech_segments",
+            return_value=vad_output,
+        ):
+            root = Path(temp_dir)
+            plan = build_chunk_window_plan(
+                input_path=root / "audio.wav",
+                settings=Settings(
+                    whispercpp_base_dir=root,
+                    whispercpp_bin=root / "whisper-cli",
+                    whispercpp_models_dir=root,
+                    whispercpp_vad_model=root / "vad.bin",
+                    temp_dir=root,
+                    default_language="it",
+                    beam_size=3,
+                    best_of=3,
+                    chunk_seconds=300,
+                    chunk_overlap_seconds=30,
+                    stitch_method="fuzzy",
+                    repetition_guard=True,
+                ),
+                audio_duration_seconds=750,
+                chunk_seconds=300,
+                chunk_overlap_seconds=30,
+                vad_threshold=0.1,
+                vad_max_speech_duration_s=3600,
+                vad_min_silence_duration_ms=1000,
+                vad_speech_pad_ms=400,
+            )
+
+        self.assertEqual(plan.strategy, "vad_silence")
+        self.assertEqual(plan.overlap_seconds, 0)
+        self.assertEqual([item.start_seconds for item in plan.windows], [0, 400, 600])
+        self.assertEqual(plan.warnings, [])
+
+    def test_chunk_window_plan_falls_back_to_fixed_windows_when_vad_fails(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "app.whisper.run_vad_speech_segments",
+            side_effect=OSError("helper missing"),
+        ):
+            root = Path(temp_dir)
+            plan = build_chunk_window_plan(
+                input_path=root / "audio.wav",
+                settings=Settings(
+                    whispercpp_base_dir=root,
+                    whispercpp_bin=root / "whisper-cli",
+                    whispercpp_models_dir=root,
+                    whispercpp_vad_model=root / "vad.bin",
+                    temp_dir=root,
+                    default_language="it",
+                    beam_size=3,
+                    best_of=3,
+                    chunk_seconds=1800,
+                    chunk_overlap_seconds=30,
+                    stitch_method="fuzzy",
+                    repetition_guard=True,
+                ),
+                audio_duration_seconds=3700,
+                chunk_seconds=1800,
+                chunk_overlap_seconds=30,
+                vad_threshold=0.1,
+                vad_max_speech_duration_s=3600,
+                vad_min_silence_duration_ms=2000,
+                vad_speech_pad_ms=400,
+            )
+
+        self.assertEqual(plan.strategy, "fixed_fallback")
+        self.assertEqual(plan.overlap_seconds, 30)
+        self.assertEqual([item.start_seconds for item in plan.windows], [0, 1770, 3540])
+        self.assertEqual(plan.warnings[0]["type"], "chunking_fixed_fallback")
 
     def test_build_stitch_variants_reuses_chunk_segments_for_each_method(self) -> None:
         windows = build_chunk_windows(
