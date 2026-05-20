@@ -55,11 +55,11 @@ class JobStore:
         vad_max_speech_duration_s: int,
         vad_min_silence_duration_ms: int,
         vad_speech_pad_ms: int,
-        chunking_mode: str,
         chunk_seconds: int,
         chunk_overlap_seconds: int,
-        stitch_method: str,
+        stitch_method: str | None,
         repetition_guard: bool,
+        stitch_methods: list[str] | None = None,
     ) -> dict[str, Any]:
         self.settings.resolve_model(model)
         job_id, job_dir = self._new_job_dir()
@@ -86,10 +86,10 @@ class JobStore:
             vad_max_speech_duration_s=vad_max_speech_duration_s,
             vad_min_silence_duration_ms=vad_min_silence_duration_ms,
             vad_speech_pad_ms=vad_speech_pad_ms,
-            chunking_mode=chunking_mode,
             chunk_seconds=chunk_seconds,
             chunk_overlap_seconds=chunk_overlap_seconds,
             stitch_method=stitch_method,
+            stitch_methods=stitch_methods,
             repetition_guard=repetition_guard,
         )
         self._write_metadata(job_dir, metadata)
@@ -108,11 +108,11 @@ class JobStore:
         vad_max_speech_duration_s: int,
         vad_min_silence_duration_ms: int,
         vad_speech_pad_ms: int,
-        chunking_mode: str,
         chunk_seconds: int,
         chunk_overlap_seconds: int,
-        stitch_method: str,
+        stitch_method: str | None,
         repetition_guard: bool,
+        stitch_methods: list[str] | None = None,
     ) -> dict[str, Any]:
         self.settings.resolve_model(model)
         if not path.exists() or not path.is_file():
@@ -135,10 +135,10 @@ class JobStore:
             vad_max_speech_duration_s=vad_max_speech_duration_s,
             vad_min_silence_duration_ms=vad_min_silence_duration_ms,
             vad_speech_pad_ms=vad_speech_pad_ms,
-            chunking_mode=chunking_mode,
             chunk_seconds=chunk_seconds,
             chunk_overlap_seconds=chunk_overlap_seconds,
             stitch_method=stitch_method,
+            stitch_methods=stitch_methods,
             repetition_guard=repetition_guard,
         )
         self._write_metadata(job_dir, metadata)
@@ -257,12 +257,12 @@ class JobStore:
                     vad_max_speech_duration_s=params["vad_max_speech_duration_s"],
                     vad_min_silence_duration_ms=params["vad_min_silence_duration_ms"],
                     vad_speech_pad_ms=params["vad_speech_pad_ms"],
-                    chunking_mode=params.get("chunking", {}).get("mode", self.settings.chunking_mode),
                     chunk_seconds=params.get("chunking", {}).get("chunk_seconds", self.settings.chunk_seconds),
                     chunk_overlap_seconds=params.get("chunking", {}).get(
                         "overlap_seconds", self.settings.chunk_overlap_seconds
                     ),
                     stitch_method=params.get("chunking", {}).get("stitch_method", self.settings.stitch_method),
+                    stitch_methods=params.get("chunking", {}).get("stitch_methods"),
                     repetition_guard=params.get("chunking", {}).get(
                         "repetition_guard", self.settings.repetition_guard
                     ),
@@ -373,13 +373,20 @@ class JobStore:
         vad_max_speech_duration_s: int,
         vad_min_silence_duration_ms: int,
         vad_speech_pad_ms: int,
-        chunking_mode: str,
         chunk_seconds: int,
         chunk_overlap_seconds: int,
-        stitch_method: str,
+        stitch_method: str | None,
         repetition_guard: bool,
+        stitch_methods: list[str] | None,
     ) -> dict[str, Any]:
         now = utc_now()
+        chunk_seconds, chunk_overlap_seconds, stitch_method, stitch_methods = self._normalize_chunking(
+            job_id=job_id,
+            chunk_seconds=chunk_seconds,
+            chunk_overlap_seconds=chunk_overlap_seconds,
+            stitch_method=stitch_method,
+            stitch_methods=stitch_methods,
+        )
         return {
             "job_id": job_id,
             "status": "queued",
@@ -404,10 +411,10 @@ class JobStore:
                 "vad_min_silence_duration_ms": vad_min_silence_duration_ms,
                 "vad_speech_pad_ms": vad_speech_pad_ms,
                 "chunking": {
-                    "mode": chunking_mode,
                     "chunk_seconds": chunk_seconds,
                     "overlap_seconds": chunk_overlap_seconds,
                     "stitch_method": stitch_method,
+                    "stitch_methods": stitch_methods if chunk_seconds > 0 else None,
                     "repetition_guard": repetition_guard,
                 },
             },
@@ -418,6 +425,26 @@ class JobStore:
             "result_path": None,
             "error": None,
         }
+
+    def _normalize_chunking(
+        self,
+        *,
+        job_id: str,
+        chunk_seconds: int,
+        chunk_overlap_seconds: int,
+        stitch_method: str | None,
+        stitch_methods: list[str] | None,
+    ) -> tuple[int, int, str | None, list[str] | None]:
+        chunk_seconds = max(int(chunk_seconds), 0)
+        chunk_overlap_seconds = max(int(chunk_overlap_seconds), 0)
+        if chunk_seconds == 0:
+            if stitch_method or stitch_methods:
+                self.logger.warning(
+                    "Job %s received stitch settings with chunk_seconds=0; disabling stitching.",
+                    job_id,
+                )
+            return 0, 0, None, None
+        return chunk_seconds, chunk_overlap_seconds, stitch_method, stitch_methods or ([stitch_method] if stitch_method else None)
 
     def _new_job_dir(self) -> tuple[str, Path]:
         job_id = uuid.uuid4().hex
@@ -556,7 +583,6 @@ def render_transcript_markdown(metadata: dict[str, Any], result: dict[str, Any])
     if chunking:
         lines.extend(
             [
-                f"- Chunking mode: {chunking.get('mode', 'unknown')}",
                 f"- Chunk seconds: {chunking.get('chunk_seconds', 'unknown')}",
                 f"- Overlap seconds: {chunking.get('overlap_seconds', 'unknown')}",
                 f"- Repetition guard: {chunking.get('repetition_guard', 'unknown')}",

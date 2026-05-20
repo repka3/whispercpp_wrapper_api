@@ -49,8 +49,6 @@ class Settings:
     default_language: str
     beam_size: int
     best_of: int
-    chunking_mode: str
-    chunk_threshold_seconds: int
     chunk_seconds: int
     chunk_overlap_seconds: int
     stitch_method: str
@@ -132,9 +130,7 @@ def get_settings() -> Settings:
         default_language=os.getenv("WHISPERCPP_DEFAULT_LANGUAGE", "it"),
         beam_size=_env_int("WHISPERCPP_BEAM_SIZE", 3),
         best_of=_env_int("WHISPERCPP_BEST_OF", 3),
-        chunking_mode=_env_choice("WHISPERCPP_CHUNKING_MODE", "auto", {"off", "auto", "always"}),
-        chunk_threshold_seconds=max(_env_int("WHISPERCPP_CHUNK_THRESHOLD_SECONDS", 1800), 1),
-        chunk_seconds=max(_env_int("WHISPERCPP_CHUNK_SECONDS", 1800), 1),
+        chunk_seconds=max(_env_int("WHISPERCPP_CHUNK_SECONDS", 0), 0),
         chunk_overlap_seconds=max(_env_int("WHISPERCPP_CHUNK_OVERLAP_SECONDS", 30), 0),
         stitch_method=_env_choice("WHISPERCPP_STITCH_METHOD", "fuzzy", STITCH_METHODS),
         repetition_guard=_env_bool("WHISPERCPP_REPETITION_GUARD", True),

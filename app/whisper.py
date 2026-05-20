@@ -159,27 +159,22 @@ def run_transcription(
     vad_max_speech_duration_s: int,
     vad_min_silence_duration_ms: int,
     vad_speech_pad_ms: int,
-    chunking_mode: str,
     chunk_seconds: int,
     chunk_overlap_seconds: int,
-    stitch_method: str,
+    stitch_method: str | None,
+    stitch_methods: list[str] | None = None,
     repetition_guard: bool,
     set_progress: ProgressCallback,
     log_stitch: StitchLogCallback | None = None,
 ) -> dict[str, Any]:
     audio_duration_seconds = probe_duration_seconds(input_path)
-    chunking_mode = chunking_mode if chunking_mode in {"off", "auto", "always"} else settings.chunking_mode
-    chunk_seconds = max(int(chunk_seconds), 1)
+    chunk_seconds = max(int(chunk_seconds), 0)
     chunk_overlap_seconds = max(int(chunk_overlap_seconds), 0)
-    if chunk_overlap_seconds >= chunk_seconds:
+    if chunk_seconds > 0 and chunk_overlap_seconds >= chunk_seconds:
         chunk_overlap_seconds = max(chunk_seconds - 1, 0)
     stitch_method = stitch_utils.normalize_stitch_method(stitch_method, settings.stitch_method)
 
-    if _should_chunk(
-        mode=chunking_mode,
-        audio_duration_seconds=audio_duration_seconds,
-        threshold_seconds=settings.chunk_threshold_seconds,
-    ):
+    if chunk_seconds > 0:
         return _run_chunked_transcription(
             job_id=job_id,
             job_dir=job_dir,
@@ -193,10 +188,10 @@ def run_transcription(
             vad_max_speech_duration_s=vad_max_speech_duration_s,
             vad_min_silence_duration_ms=vad_min_silence_duration_ms,
             vad_speech_pad_ms=vad_speech_pad_ms,
-            chunking_mode=chunking_mode,
             chunk_seconds=chunk_seconds,
             chunk_overlap_seconds=chunk_overlap_seconds,
             stitch_method=stitch_method,
+            stitch_methods=stitch_methods,
             repetition_guard=repetition_guard,
             audio_duration_seconds=audio_duration_seconds,
             set_progress=set_progress,
@@ -305,6 +300,13 @@ def _run_single_transcription(
         audio_duration_seconds=audio_duration_seconds,
         elapsed_seconds=elapsed_seconds,
     )
+    result["decode"]["chunking"] = {
+        "enabled": False,
+        "chunk_seconds": 0,
+        "overlap_seconds": 0,
+        "stitch_method": None,
+        "stitch_methods": None,
+    }
     result_path = job_dir / "result.json"
     _write_json(result_path, result)
     return result
@@ -324,10 +326,10 @@ def _run_chunked_transcription(
     vad_max_speech_duration_s: int,
     vad_min_silence_duration_ms: int,
     vad_speech_pad_ms: int,
-    chunking_mode: str,
     chunk_seconds: int,
     chunk_overlap_seconds: int,
     stitch_method: str,
+    stitch_methods: list[str] | None,
     repetition_guard: bool,
     audio_duration_seconds: float,
     set_progress: ProgressCallback,
@@ -338,8 +340,12 @@ def _run_chunked_transcription(
     chunks_dir.mkdir(parents=True, exist_ok=True)
     stdout_log = job_dir / "whisper_stdout.log"
     stderr_log = job_dir / "whisper_stderr.log"
-    stitch_debug_path = job_dir / "stitch_debug.md"
-    stitch_debug_json_path = job_dir / "stitch_debug.json"
+    primary_stitch_method = stitch_utils.normalize_stitch_method(stitch_method, settings.stitch_method)
+    requested_stitch_methods = normalize_requested_stitch_methods(
+        primary_stitch_method,
+        stitch_methods,
+        settings.stitch_method,
+    )
     windows = build_chunk_windows(
         audio_duration_seconds=audio_duration_seconds,
         chunk_seconds=chunk_seconds,
@@ -348,8 +354,7 @@ def _run_chunked_transcription(
     if not windows:
         raise TranscriptionError("Unable to build transcription chunks")
 
-    all_segments: list[dict[str, Any]] = []
-    stitch_audits: list[dict[str, Any]] = []
+    chunk_outputs: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     retried_chunks: list[int] = []
     set_progress(5)
@@ -360,12 +365,12 @@ def _run_chunked_transcription(
             "chunk_count": len(windows),
             "chunk_seconds": chunk_seconds,
             "overlap_seconds": chunk_overlap_seconds,
-            "stitch_method": stitch_method,
+            "stitch_method": primary_stitch_method,
+            "stitch_methods": requested_stitch_methods,
         },
     )
     _append_text(stdout_log, f"Chunked transcription enabled: {len(windows)} chunks.\n")
     _append_text(stderr_log, "Chunked mode writes detailed whisper logs under chunks/<index>/.\n")
-    _write_stitch_debug_header(stitch_debug_path, job_id=job_id)
 
     for window in windows:
         chunk_dir = chunks_dir / f"{window.index:04d}"
@@ -418,41 +423,32 @@ def _run_chunked_transcription(
         if warning and warning.get("first_bad_index") is not None:
             chunk_segments = chunk_segments[: int(warning["first_bad_index"])]
 
-        all_segments, audit = stitch_utils.merge_chunk_segments_with_audit(
-            all_segments,
-            chunk_segments,
-            previous_chunk_index=window.index - 1,
-            next_chunk_index=window.index,
-            overlap_start_seconds=window.start_seconds,
-            overlap_end_seconds=window.start_seconds + chunk_overlap_seconds if window.index > 0 else None,
-            overlap_seconds=chunk_overlap_seconds,
-            chunk_start_seconds=window.start_seconds,
-            chunk_end_seconds=window.start_seconds + window.duration_seconds,
-            is_first_chunk=window.index == 0,
-            is_last_chunk=window.index == len(windows) - 1,
-            incoming_warning=warning,
-            stitch_method=stitch_method,
+        chunk_outputs.append(
+            {
+                "window": window,
+                "segments": chunk_segments,
+                "warning": warning,
+            }
         )
-        if audit is not None:
-            stitch_audits.append(audit)
-            _append_text(stitch_debug_path, stitch_utils.render_stitch_audit_markdown(audit))
-            _emit_stitch_log(
-                log_stitch,
-                {
-                    "type": "boundary",
-                    "previous_chunk": audit.get("previous_chunk"),
-                    "next_chunk": audit.get("next_chunk"),
-                    "method": audit.get("method", stitch_method),
-                    "overlap_start_label": audit.get("overlap_start_label"),
-                    "overlap_end_label": audit.get("overlap_end_label"),
-                    "counts": audit.get("counts", {}),
-                },
-            )
 
     set_progress(95)
-    all_segments.sort(key=lambda item: (item["start"], item["end"]))
     elapsed_seconds = time.monotonic() - started
-    text = " ".join(item["transcript"] for item in all_segments if item["transcript"]).strip()
+    variants = build_stitch_variants(
+        job_id=job_id,
+        job_dir=job_dir,
+        chunk_outputs=chunk_outputs,
+        stitch_methods=requested_stitch_methods,
+        chunk_overlap_seconds=chunk_overlap_seconds,
+        chunk_seconds=chunk_seconds,
+        repetition_guard=repetition_guard,
+        retried_chunks=retried_chunks,
+        warnings=warnings,
+        log_stitch=log_stitch,
+        log_primary_method=primary_stitch_method,
+    )
+    primary_variant = variants[primary_stitch_method]
+    all_segments = primary_variant["segments"]
+    text = primary_variant["text"]
     rtf = elapsed_seconds / audio_duration_seconds if audio_duration_seconds > 0 else 0.0
     speedup = audio_duration_seconds / elapsed_seconds if elapsed_seconds > 0 else 0.0
     result = {
@@ -474,17 +470,16 @@ def _run_chunked_transcription(
             "best_of": best_of,
             "chunking": {
                 "enabled": True,
-                "mode": chunking_mode,
                 "chunk_seconds": chunk_seconds,
                 "overlap_seconds": chunk_overlap_seconds,
                 "chunk_count": len(windows),
-                "threshold_seconds": settings.chunk_threshold_seconds,
-                "stitch_method": stitch_method,
+                "stitch_method": primary_stitch_method,
+                "stitch_methods": requested_stitch_methods,
                 "repetition_guard": repetition_guard,
                 "retried_chunks": retried_chunks,
                 "warning_count": len(warnings),
-                "stitch_debug_path": str(stitch_debug_path),
-                "stitch_debug_json_path": str(stitch_debug_json_path),
+                "stitch_debug_path": primary_variant["decode"]["chunking"].get("stitch_debug_path"),
+                "stitch_debug_json_path": primary_variant["decode"]["chunking"].get("stitch_debug_json_path"),
             },
         },
         "metrics": {
@@ -496,27 +491,131 @@ def _run_chunked_transcription(
     }
     if warnings:
         result["warnings"] = warnings
-    _write_json(
-        stitch_debug_json_path,
-        {
-            "job_id": job_id,
-            "chunk_count": len(windows),
-            "overlap_seconds": chunk_overlap_seconds,
-            "stitch_method": stitch_method,
-            "boundaries": stitch_audits,
-        },
-    )
+    result["stitch_variants"] = variants
     _emit_stitch_log(
         log_stitch,
         {
             "type": "chunking_finished",
             "segment_count": len(all_segments),
-            "stitch_debug_json_path": str(stitch_debug_json_path),
+            "stitch_debug_json_path": primary_variant["decode"]["chunking"].get("stitch_debug_json_path"),
         },
     )
     result_path = job_dir / "result.json"
     _write_json(result_path, result)
     return result
+
+
+def normalize_requested_stitch_methods(
+    stitch_method: str,
+    stitch_methods: list[str] | None,
+    default: str,
+) -> list[str]:
+    primary_method = stitch_utils.normalize_stitch_method(stitch_method, default)
+    requested = stitch_methods or [primary_method]
+    methods: list[str] = []
+    for item in requested:
+        method = stitch_utils.normalize_stitch_method(item, "")
+        if method and method not in methods:
+            methods.append(method)
+    if primary_method not in methods:
+        methods.insert(0, primary_method)
+    return methods
+
+
+def build_stitch_variants(
+    *,
+    job_id: str,
+    job_dir: Path,
+    chunk_outputs: list[dict[str, Any]],
+    stitch_methods: list[str],
+    chunk_overlap_seconds: int,
+    chunk_seconds: int,
+    repetition_guard: bool,
+    retried_chunks: list[int],
+    warnings: list[dict[str, Any]],
+    log_stitch: StitchLogCallback | None,
+    log_primary_method: str,
+) -> dict[str, dict[str, Any]]:
+    variants: dict[str, dict[str, Any]] = {}
+    for method in stitch_methods:
+        debug_path = job_dir / ("stitch_debug.md" if method == log_primary_method else f"stitch_debug_{method}.md")
+        debug_json_path = job_dir / (
+            "stitch_debug.json" if method == log_primary_method else f"stitch_debug_{method}.json"
+        )
+        _write_stitch_debug_header(debug_path, job_id=job_id)
+
+        all_segments: list[dict[str, Any]] = []
+        stitch_audits: list[dict[str, Any]] = []
+        for item in chunk_outputs:
+            window = item["window"]
+            chunk_segments = item["segments"]
+            warning = item["warning"]
+            all_segments, audit = stitch_utils.merge_chunk_segments_with_audit(
+                all_segments,
+                chunk_segments,
+                previous_chunk_index=window.index - 1,
+                next_chunk_index=window.index,
+                overlap_start_seconds=window.start_seconds,
+                overlap_end_seconds=window.start_seconds + chunk_overlap_seconds if window.index > 0 else None,
+                overlap_seconds=chunk_overlap_seconds,
+                chunk_start_seconds=window.start_seconds,
+                chunk_end_seconds=window.start_seconds + window.duration_seconds,
+                is_first_chunk=window.index == 0,
+                is_last_chunk=window.index == len(chunk_outputs) - 1,
+                incoming_warning=warning,
+                stitch_method=method,
+            )
+            if audit is None:
+                continue
+            stitch_audits.append(audit)
+            _append_text(debug_path, stitch_utils.render_stitch_audit_markdown(audit))
+            if method == log_primary_method:
+                _emit_stitch_log(
+                    log_stitch,
+                    {
+                        "type": "boundary",
+                        "previous_chunk": audit.get("previous_chunk"),
+                        "next_chunk": audit.get("next_chunk"),
+                        "method": audit.get("method", method),
+                        "overlap_start_label": audit.get("overlap_start_label"),
+                        "overlap_end_label": audit.get("overlap_end_label"),
+                        "counts": audit.get("counts", {}),
+                    },
+                )
+
+        all_segments.sort(key=lambda segment: (segment["start"], segment["end"]))
+        text = " ".join(item["transcript"] for item in all_segments if item["transcript"]).strip()
+        _write_json(
+            debug_json_path,
+            {
+                "job_id": job_id,
+                "chunk_count": len(chunk_outputs),
+                "overlap_seconds": chunk_overlap_seconds,
+                "stitch_method": method,
+                "boundaries": stitch_audits,
+            },
+        )
+        variants[method] = {
+            "text": text,
+            "segments": all_segments,
+            "warnings": warnings,
+            "decode": {
+                "chunking": {
+                    "enabled": True,
+                    "chunk_seconds": chunk_seconds,
+                    "overlap_seconds": chunk_overlap_seconds,
+                    "chunk_count": len(chunk_outputs),
+                    "stitch_method": method,
+                    "repetition_guard": repetition_guard,
+                    "retried_chunks": retried_chunks,
+                    "warning_count": len(warnings),
+                    "stitch_debug_path": str(debug_path),
+                    "stitch_debug_json_path": str(debug_json_path),
+                },
+            },
+        }
+
+    return variants
 
 
 def _run_chunk_window(
@@ -1164,14 +1263,6 @@ def format_timestamp(seconds: float) -> str:
     mins = minutes_total % 60
     hours = minutes_total // 60
     return f"{hours:02d}:{mins:02d}:{secs:02d}.{millis:03d}"
-
-
-def _should_chunk(*, mode: str, audio_duration_seconds: float, threshold_seconds: int) -> bool:
-    if mode == "off":
-        return False
-    if mode == "always":
-        return audio_duration_seconds > 0
-    return audio_duration_seconds >= threshold_seconds
 
 
 def _chunk_progress(chunk_index: int, chunk_count: int, chunk_progress: int) -> int:

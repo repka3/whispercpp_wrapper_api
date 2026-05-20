@@ -95,8 +95,6 @@ class SettingsTests(unittest.TestCase):
             default_language="it",
             beam_size=3,
             best_of=3,
-            chunking_mode="auto",
-            chunk_threshold_seconds=1800,
             chunk_seconds=1800,
             chunk_overlap_seconds=30,
             stitch_method="fuzzy",

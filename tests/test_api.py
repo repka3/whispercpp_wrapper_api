@@ -35,8 +35,6 @@ class ApiModelTests(unittest.TestCase):
             default_language="it",
             beam_size=3,
             best_of=3,
-            chunking_mode="auto",
-            chunk_threshold_seconds=1800,
             chunk_seconds=1800,
             chunk_overlap_seconds=30,
             stitch_method="fuzzy",
@@ -75,6 +73,45 @@ class ApiModelTests(unittest.TestCase):
         )
 
         self.assertEqual(request.stitch_method, "safe_zone")
+
+    def test_path_transcription_accepts_stitch_methods(self) -> None:
+        request = main.PathTranscriptionRequest(
+            path=str(self.audio),
+            model="ggml-large-v3.bin",
+            stitch_methods=["fuzzy", "safe_zone", "fuzzy"],
+        )
+
+        self.assertEqual(request.stitch_methods, ["fuzzy", "safe_zone"])
+
+    def test_path_transcription_rejects_unknown_stitch_methods(self) -> None:
+        with self.assertRaises(ValidationError):
+            main.PathTranscriptionRequest(
+                path=str(self.audio),
+                model="ggml-large-v3.bin",
+                stitch_methods=["missing"],
+            )
+
+    def test_path_transcription_chunk_zero_disables_stitching_with_warning(self) -> None:
+        store = JobStore(self.settings)
+        store.initialize()
+        request = main.PathTranscriptionRequest(
+            path=str(self.audio),
+            model="ggml-large-v3.bin",
+            chunk_seconds=0,
+            stitch_method="safe_zone",
+            stitch_methods=["fuzzy", "safe_zone"],
+        )
+
+        with patch.multiple(main, settings=self.settings, job_store=store):
+            with self.assertLogs("uvicorn.error", level="WARNING") as logs:
+                response = main.transcribe_path(request)
+
+        chunking = response["params"]["chunking"]
+        self.assertEqual(chunking["chunk_seconds"], 0)
+        self.assertEqual(chunking["overlap_seconds"], 0)
+        self.assertIsNone(chunking["stitch_method"])
+        self.assertIsNone(chunking["stitch_methods"])
+        self.assertIn("chunk_seconds=0", "\n".join(logs.output))
 
     def test_path_transcription_rejects_unknown_model(self) -> None:
         with self._patch_app():

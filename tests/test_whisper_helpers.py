@@ -1,10 +1,15 @@
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from app.whisper import (
+    build_stitch_variants,
     build_chunk_windows,
     detect_repetition,
+    run_transcription,
     _extract_segments,
 )
+from app.config import Settings
 from app.stitch_utils import (
     format_timestamp,
     merge_chunk_segments,
@@ -50,6 +55,126 @@ class WhisperHelperTests(unittest.TestCase):
         )
 
         self.assertEqual([item.start_seconds for item in windows], [0, 1])
+
+    def test_build_stitch_variants_reuses_chunk_segments_for_each_method(self) -> None:
+        windows = build_chunk_windows(
+            audio_duration_seconds=4,
+            chunk_seconds=3,
+            overlap_seconds=1,
+        )
+        with self.subTest("fixture"):
+            self.assertEqual(len(windows), 2)
+
+        chunk_outputs = [
+            {
+                "window": windows[0],
+                "segments": [self._segment(0, 2, "Ciao mondo")],
+                "warning": None,
+            },
+            {
+                "window": windows[1],
+                "segments": [
+                    self._segment(2, 2.5, "Ciao mondo"),
+                    self._segment(3, 4, "Nuovo testo"),
+                ],
+                "warning": None,
+            },
+        ]
+
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            variants = build_stitch_variants(
+                job_id="job-1",
+                job_dir=Path(temp_dir),
+                chunk_outputs=chunk_outputs,
+                stitch_methods=["fuzzy", "safe_zone"],
+                chunk_overlap_seconds=1,
+                chunk_seconds=3,
+                repetition_guard=True,
+                retried_chunks=[],
+                warnings=[],
+                log_stitch=None,
+                log_primary_method="fuzzy",
+            )
+
+        self.assertEqual(set(variants), {"fuzzy", "safe_zone"})
+        self.assertIn("Nuovo testo", variants["fuzzy"]["text"])
+        self.assertEqual(variants["fuzzy"]["decode"]["chunking"]["stitch_method"], "fuzzy")
+        self.assertEqual(variants["safe_zone"]["decode"]["chunking"]["stitch_method"], "safe_zone")
+
+    def test_single_pass_transcription_does_not_create_stitch_variants(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "audio.wav"
+            input_path.write_bytes(b"audio")
+            model_path = root / "model.bin"
+            model_path.write_bytes(b"model")
+            settings = Settings(
+                whispercpp_base_dir=root,
+                whispercpp_bin=root / "whisper-cli",
+                whispercpp_models_dir=root,
+                whispercpp_vad_model=root / "vad.bin",
+                temp_dir=root,
+                default_language="it",
+                beam_size=3,
+                best_of=3,
+                chunk_seconds=0,
+                chunk_overlap_seconds=30,
+                stitch_method="fuzzy",
+                repetition_guard=True,
+            )
+            (root / "whisper_output.json").write_text("{}", encoding="utf-8")
+            base_result = {
+                "job_id": "job-1",
+                "engine": "whisper.cpp",
+                "model": "model.bin",
+                "language": "it",
+                "text": "Ciao mondo",
+                "segments": [],
+                "decode": {"beam_size": 3, "best_of": 3},
+                "metrics": {},
+            }
+
+            with patch("app.whisper.probe_duration_seconds", return_value=10.0), \
+                patch("app.whisper._start_whisper", return_value=object()), \
+                patch("app.whisper._capture_process", return_value=0), \
+                patch("app.whisper.normalize_whisper_json", return_value=base_result):
+                result = run_transcription(
+                    job_id="job-1",
+                    job_dir=root,
+                    input_path=input_path,
+                    settings=settings,
+                    model_path=model_path,
+                    language="it",
+                    beam_size=3,
+                    best_of=3,
+                    vad_threshold=0.1,
+                    vad_max_speech_duration_s=3600,
+                    vad_min_silence_duration_ms=2000,
+                    vad_speech_pad_ms=400,
+                    chunk_seconds=0,
+                    chunk_overlap_seconds=30,
+                    stitch_method="safe_zone",
+                    stitch_methods=["fuzzy", "safe_zone"],
+                    repetition_guard=True,
+                    set_progress=lambda _progress: None,
+                )
+
+        self.assertNotIn("stitch_variants", result)
+        self.assertEqual(
+            result["decode"]["chunking"],
+            {
+                "enabled": False,
+                "chunk_seconds": 0,
+                "overlap_seconds": 0,
+                "stitch_method": None,
+                "stitch_methods": None,
+            },
+        )
 
     def test_merge_chunk_segments_dedupes_overlap(self) -> None:
         existing = [

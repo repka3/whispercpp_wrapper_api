@@ -361,7 +361,7 @@
               </label>
               <label>
                 VAD max speech seconds
-                <input id="vadMax" name="vad_max_speech_duration_s" type="number" min="1" value="30" />
+                <input id="vadMax" name="vad_max_speech_duration_s" type="number" min="1" value="3600" />
               </label>
               <label>
                 VAD min silence ms
@@ -372,16 +372,8 @@
                 <input id="vadPad" name="vad_speech_pad_ms" type="number" min="0" value="400" />
               </label>
               <label>
-                Chunking
-                <select id="chunkingMode" name="chunking_mode">
-                  <option value="auto" selected>auto</option>
-                  <option value="always">always</option>
-                  <option value="off">off</option>
-                </select>
-              </label>
-              <label>
-                Chunk minutes
-                <input id="chunkMinutes" name="chunk_minutes" type="number" min="1" value="30" />
+                Chunk seconds
+                <input id="chunkSeconds" name="chunk_seconds" type="number" min="0" value="0" />
               </label>
               <label>
                 Overlap seconds
@@ -474,11 +466,10 @@
           beam_size: Number(document.querySelector("#beamSize").value || 3),
           best_of: Number(document.querySelector("#bestOf").value || 3),
           vad_threshold: Number(document.querySelector("#vadThreshold").value || 0.1),
-          vad_max_speech_duration_s: Number(document.querySelector("#vadMax").value || 30),
+          vad_max_speech_duration_s: Number(document.querySelector("#vadMax").value || 3600),
           vad_min_silence_duration_ms: Number(document.querySelector("#vadSilence").value || 2000),
           vad_speech_pad_ms: Number(document.querySelector("#vadPad").value || 400),
-          chunking_mode: document.querySelector("#chunkingMode").value || "auto",
-          chunk_seconds: Number(document.querySelector("#chunkMinutes").value || 30) * 60,
+          chunk_seconds: Number(document.querySelector("#chunkSeconds").value || 0),
           chunk_overlap_seconds: Number(document.querySelector("#chunkOverlap").value || 30),
           stitch_method: stitchMethodSelect.value || "fuzzy",
           repetition_guard: document.querySelector("#repetitionGuard").value === "true",
