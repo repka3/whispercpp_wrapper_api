@@ -12,6 +12,7 @@ WHISPERCPP_CHUNK_SECONDS=0
 WHISPERCPP_CHUNK_OVERLAP_SECONDS=30
 WHISPERCPP_STITCH_METHOD=fuzzy
 WHISPERCPP_REPETITION_GUARD=true
+WHISPERCPP_VAD_CUT_THRESHOLD=0.5
 ```
 
 The wrapper expects:
@@ -35,6 +36,8 @@ Content-Type: application/json
   "path": "/absolute/path/audio.mp3",
   "model": "ggml-large-v3-turbo.bin",
   "language": "it",
+  "vad_threshold": 0.01,
+  "vad_cut_threshold": 0.5,
   "chunk_seconds": 1800,
   "chunk_overlap_seconds": 30,
   "stitch_method": "fuzzy",
@@ -70,23 +73,27 @@ GET /jobs
 - `chunk_seconds = 0`: run one full-file transcription pass.
 - `chunk_seconds > 0`: split the audio into chunks and combine the chunk results.
 
-When chunking is enabled, the wrapper now tries silence-aligned chunking first:
+`vad_threshold` is used by `whisper-cli` while transcribing each full file or chunk.
+`vad_cut_threshold` is used only for the pre-cut planning pass. This lets transcription stay sensitive, for example `0.01`, while cut planning uses a stricter threshold, for example `0.5`, so silence gaps are easier to find.
 
-1. It runs `whisper-vad-speech-segments` once on the full input using the same VAD settings passed to the API.
+When chunking is enabled, the wrapper now tries silence-aligned cuts at each target boundary:
+
+1. It runs `whisper-vad-speech-segments` once on the full input using `vad_cut_threshold`.
 2. It infers silence gaps from the detected speech segments.
 3. It searches for a safe silence cut near each absolute target: `chunk_seconds`, `2 * chunk_seconds`, `3 * chunk_seconds`, and so on.
-4. It selects the silence cut closest to each target.
-5. It extracts non-overlapping chunks at those silence cuts and combines the resulting segments in order.
+4. For each target, it selects the silence cut closest to that target when one is usable.
+5. If one target has no usable silence, only that boundary becomes a fixed hard fallback cut.
+6. It extracts chunks and combines the resulting segments in order.
 
 The targets are absolute. For example, with `chunk_seconds = 300`, target cuts stay near `300`, `600`, `900`, etc. If the first selected cut moves to `400`, the next target is still `600`, not `700`.
 
-For successful silence-aligned chunking, the effective overlap is `0`, even if `chunk_overlap_seconds` was requested. The original requested overlap is still reported in result metadata as `requested_overlap_seconds`.
+For pure `vad_silence` chunking, the effective overlap is `0`, even if `chunk_overlap_seconds` was requested. For `mixed` chunking, VAD-silence boundaries use `0` overlap and hard fallback boundaries use the requested overlap. The original requested overlap is still reported in result metadata as `requested_overlap_seconds`.
 
 ## Fixed Fallback
 
-If the VAD helper is unavailable, fails, produces unparsable output, or cannot find safe silence cuts, the wrapper falls back to the previous fixed chunking behavior.
+If the VAD helper is unavailable, fails, or produces unparsable output, the wrapper falls back to the previous fixed chunking behavior for the whole file.
 
-In fallback mode:
+In full fallback mode:
 
 - chunks are cut at fixed timestamps;
 - `chunk_overlap_seconds` is honored;
@@ -111,7 +118,8 @@ Chunked results include `decode.chunking` metadata:
       "selected_seconds": 1798.42,
       "silence_start_seconds": 1797.91,
       "silence_end_seconds": 1798.93,
-      "distance_seconds": 1.58
+      "distance_seconds": 1.58,
+      "cut_type": "vad_silence"
     }
   ],
   "chunk_count": 2,
@@ -124,8 +132,14 @@ Chunked results include `decode.chunking` metadata:
 Possible `strategy` values:
 
 - `vad_silence`: silence-aligned chunks were used.
+- `mixed`: at least one boundary used a VAD silence cut and at least one boundary used a hard fallback cut.
 - `fixed_fallback`: silence planning failed, so fixed timestamp chunks were used.
 - `fixed`: fixed chunking was used because silence planning was not needed, such as a single-chunk input.
+
+Each item in `silence_cuts` includes `cut_type`:
+
+- `vad_silence`: the boundary was moved to a detected silence gap.
+- `hard_fallback`: no usable silence was found for that target, so that boundary used the target timestamp and requested overlap.
 
 ## Local Checks
 
