@@ -6,6 +6,7 @@ from app.whisper import (
     build_stitch_variants,
     build_chunk_windows,
     build_chunk_window_plan,
+    build_mixed_aligned_chunk_windows,
     build_silence_aligned_chunk_windows,
     detect_repetition,
     parse_vad_speech_segments,
@@ -65,8 +66,8 @@ class WhisperHelperTests(unittest.TestCase):
             "\n".join(
                 [
                     "Detected 2 speech segments:",
-                    "Speech segment 0: start = 0.29, end = 2.21",
-                    "Speech segment 1: start = 3.30, end = 3.77",
+                    "Speech segment 0: start = 29.00, end = 221.00",
+                    "Speech segment 1: start = 330.00, end = 377.00",
                 ]
             )
         )
@@ -78,6 +79,19 @@ class WhisperHelperTests(unittest.TestCase):
                 VadSpeechSegment(start_seconds=3.3, end_seconds=3.77),
             ],
         )
+
+    def test_parse_vad_speech_segments_prefers_second_based_vad_logs(self) -> None:
+        segments = parse_vad_speech_segments(
+            "\n".join(
+                [
+                    "Detected 1 speech segments:",
+                    "Speech segment 0: start = 0.00, end = 2165.00",
+                    "whisper_vad_segments_from_probs: VAD segment 0: start = 0.00, end = 21.65 (duration: 21.65)",
+                ]
+            )
+        )
+
+        self.assertEqual(segments, [VadSpeechSegment(start_seconds=0, end_seconds=21.65)])
 
     def test_silence_aligned_chunk_windows_use_absolute_targets_without_drift(self) -> None:
         windows, decisions = build_silence_aligned_chunk_windows(
@@ -96,15 +110,34 @@ class WhisperHelperTests(unittest.TestCase):
         self.assertEqual([item.start_seconds for item in windows], [0, 400, 600])
         self.assertEqual([item.duration_seconds for item in windows], [400, 200, 150])
 
+    def test_mixed_chunk_windows_fall_back_per_boundary(self) -> None:
+        windows, decisions = build_mixed_aligned_chunk_windows(
+            audio_duration_seconds=750,
+            chunk_seconds=300,
+            speech_segments=[
+                VadSpeechSegment(start_seconds=0, end_seconds=450),
+                VadSpeechSegment(start_seconds=550, end_seconds=590),
+                VadSpeechSegment(start_seconds=610, end_seconds=750),
+            ],
+            silence_min_duration_ms=1000,
+            overlap_seconds=30,
+        )
+
+        self.assertEqual([item.cut_type for item in decisions], ["hard_fallback", "vad_silence"])
+        self.assertEqual([item.selected_seconds for item in decisions], [300, 600])
+        self.assertEqual([item.start_seconds for item in windows], [0, 270, 600])
+        self.assertEqual([item.previous_overlap_seconds for item in windows], [0, 30, 0])
+        self.assertEqual([item.next_overlap_seconds for item in windows], [30, 0, 0])
+
     def test_chunk_window_plan_uses_vad_silence_with_zero_overlap(self) -> None:
         import tempfile
 
         vad_output = "\n".join(
             [
                 "Detected 3 speech segments:",
-                "Speech segment 0: start = 0.00, end = 390.00",
-                "Speech segment 1: start = 410.00, end = 590.00",
-                "Speech segment 2: start = 610.00, end = 750.00",
+                "Speech segment 0: start = 0.00, end = 39000.00",
+                "Speech segment 1: start = 41000.00, end = 59000.00",
+                "Speech segment 2: start = 61000.00, end = 75000.00",
             ]
         )
         with tempfile.TemporaryDirectory() as temp_dir, patch(

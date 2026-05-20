@@ -134,3 +134,23 @@ Use the project virtualenv for tests:
 ```bash
 .venv/bin/python -m unittest discover -v
 ```
+
+## Golden Cut Debugging
+
+Use the hand-checked `golden/*.mp3` + `golden/*.txt` pairs to debug chunk planning and WER regressions locally.
+
+Fast VAD/cut planning only:
+
+```bash
+.venv/bin/python scripts/golden_cut_debug.py --planner-only
+```
+
+Full transcription comparison:
+
+```bash
+.venv/bin/python scripts/golden_cut_debug.py
+```
+
+The runner writes `summary.csv`, `summary.md`, and per-case diagnostics under `golden_runs/<timestamp>/`.
+It defaults to `vad_threshold=0.01` for transcription, `vad_cut_threshold=0.5` for cut planning,
+simulated chunk sizes `120 300`, and stitch variants `fuzzy safe_zone`.

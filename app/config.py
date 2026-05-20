@@ -22,6 +22,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None or raw == "":
@@ -53,6 +63,7 @@ class Settings:
     chunk_overlap_seconds: int
     stitch_method: str
     repetition_guard: bool
+    vad_cut_threshold: float = 0.5
 
     @property
     def jobs_dir(self) -> Path:
@@ -130,6 +141,7 @@ def get_settings() -> Settings:
         default_language=os.getenv("WHISPERCPP_DEFAULT_LANGUAGE", "it"),
         beam_size=_env_int("WHISPERCPP_BEAM_SIZE", 3),
         best_of=_env_int("WHISPERCPP_BEST_OF", 3),
+        vad_cut_threshold=min(max(_env_float("WHISPERCPP_VAD_CUT_THRESHOLD", 0.5), 0.0), 1.0),
         chunk_seconds=max(_env_int("WHISPERCPP_CHUNK_SECONDS", 0), 0),
         chunk_overlap_seconds=max(_env_int("WHISPERCPP_CHUNK_OVERLAP_SECONDS", 30), 0),
         stitch_method=_env_choice("WHISPERCPP_STITCH_METHOD", "fuzzy", STITCH_METHODS),

@@ -40,6 +40,7 @@ class PathTranscriptionRequest(BaseModel):
     beam_size: int | None = Field(default=None, ge=1)
     best_of: int | None = Field(default=None, ge=1)
     vad_threshold: float = Field(default=0.1, ge=0.0, le=1.0)
+    vad_cut_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     vad_max_speech_duration_s: int = Field(default=3600, ge=1)
     vad_min_silence_duration_ms: int = Field(default=2000, ge=0)
     vad_speech_pad_ms: int = Field(default=400, ge=0)
@@ -107,6 +108,7 @@ def health() -> dict:
             "language": settings.default_language,
             "beam_size": settings.beam_size,
             "best_of": settings.best_of,
+            "vad_cut_threshold": settings.vad_cut_threshold,
             "chunk_seconds": settings.chunk_seconds,
             "chunk_overlap_seconds": settings.chunk_overlap_seconds,
             "stitch_method": settings.stitch_method,
@@ -136,6 +138,7 @@ async def transcribe_upload(
     beam_size: Annotated[int | None, Form(ge=1)] = None,
     best_of: Annotated[int | None, Form(ge=1)] = None,
     vad_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = 0.1,
+    vad_cut_threshold: Annotated[float | None, Form(ge=0.0, le=1.0)] = None,
     vad_max_speech_duration_s: Annotated[int, Form(ge=1)] = 3600,
     vad_min_silence_duration_ms: Annotated[int, Form(ge=0)] = 2000,
     vad_speech_pad_ms: Annotated[int, Form(ge=0)] = 400,
@@ -152,6 +155,7 @@ async def transcribe_upload(
         beam_size=beam_size or settings.beam_size,
         best_of=best_of or settings.best_of,
         vad_threshold=vad_threshold,
+        vad_cut_threshold=settings.vad_cut_threshold if vad_cut_threshold is None else vad_cut_threshold,
         vad_max_speech_duration_s=vad_max_speech_duration_s,
         vad_min_silence_duration_ms=vad_min_silence_duration_ms,
         vad_speech_pad_ms=vad_speech_pad_ms,
@@ -177,6 +181,7 @@ def transcribe_path(request: PathTranscriptionRequest) -> dict:
         beam_size=request.beam_size or settings.beam_size,
         best_of=request.best_of or settings.best_of,
         vad_threshold=request.vad_threshold,
+        vad_cut_threshold=settings.vad_cut_threshold if request.vad_cut_threshold is None else request.vad_cut_threshold,
         vad_max_speech_duration_s=request.vad_max_speech_duration_s,
         vad_min_silence_duration_ms=request.vad_min_silence_duration_ms,
         vad_speech_pad_ms=request.vad_speech_pad_ms,

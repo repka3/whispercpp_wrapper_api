@@ -70,6 +70,8 @@ def merge_chunk_segments_with_audit(
     overlap_start_seconds: float,
     overlap_end_seconds: float | None,
     overlap_seconds: float = 0,
+    leading_overlap_seconds: float | None = None,
+    trailing_overlap_seconds: float | None = None,
     chunk_start_seconds: float | None = None,
     chunk_end_seconds: float | None = None,
     is_first_chunk: bool = False,
@@ -87,6 +89,8 @@ def merge_chunk_segments_with_audit(
             overlap_start_seconds=overlap_start_seconds,
             overlap_end_seconds=overlap_end_seconds,
             overlap_seconds=overlap_seconds,
+            leading_overlap_seconds=leading_overlap_seconds,
+            trailing_overlap_seconds=trailing_overlap_seconds,
             chunk_start_seconds=chunk_start_seconds,
             chunk_end_seconds=chunk_end_seconds,
             is_first_chunk=is_first_chunk,
@@ -250,6 +254,8 @@ def merge_chunk_segments_safe_zone(
     overlap_start_seconds: float,
     overlap_end_seconds: float | None,
     overlap_seconds: float,
+    leading_overlap_seconds: float | None,
+    trailing_overlap_seconds: float | None,
     chunk_start_seconds: float | None,
     chunk_end_seconds: float | None,
     is_first_chunk: bool,
@@ -259,9 +265,10 @@ def merge_chunk_segments_safe_zone(
     chunk_start = overlap_start_seconds if chunk_start_seconds is None else chunk_start_seconds
     fallback_end = max((float(item["end"]) for item in incoming), default=chunk_start)
     chunk_end = fallback_end if chunk_end_seconds is None else chunk_end_seconds
-    half_overlap = max(float(overlap_seconds), 0.0) / 2.0
-    safe_start = chunk_start if is_first_chunk else chunk_start + half_overlap
-    safe_end = chunk_end if is_last_chunk else chunk_end - half_overlap
+    leading_half_overlap = max(float(overlap_seconds if leading_overlap_seconds is None else leading_overlap_seconds), 0.0) / 2.0
+    trailing_half_overlap = max(float(overlap_seconds if trailing_overlap_seconds is None else trailing_overlap_seconds), 0.0) / 2.0
+    safe_start = chunk_start if is_first_chunk else chunk_start + leading_half_overlap
+    safe_end = chunk_end if is_last_chunk else chunk_end - trailing_half_overlap
 
     merged = list(existing)
     incoming_decisions: list[dict[str, Any]] = []

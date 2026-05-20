@@ -27,6 +27,8 @@ class ChunkWindow:
     index: int
     start_seconds: float
     duration_seconds: float
+    previous_overlap_seconds: int = 0
+    next_overlap_seconds: int = 0
 
 
 @dataclass(frozen=True)
@@ -41,19 +43,25 @@ class SilenceCutDecision:
     selected_seconds: float
     silence_start_seconds: float
     silence_end_seconds: float
+    cut_type: str = "vad_silence"
+    reason: str = ""
 
     @property
     def distance_seconds(self) -> float:
         return abs(self.selected_seconds - self.target_seconds)
 
-    def as_dict(self) -> dict[str, float]:
-        return {
+    def as_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
             "target_seconds": round(self.target_seconds, 3),
             "selected_seconds": round(self.selected_seconds, 3),
             "silence_start_seconds": round(self.silence_start_seconds, 3),
             "silence_end_seconds": round(self.silence_end_seconds, 3),
             "distance_seconds": round(self.distance_seconds, 3),
+            "cut_type": self.cut_type,
         }
+        if self.reason:
+            data["reason"] = self.reason
+        return data
 
 
 @dataclass(frozen=True)
@@ -203,6 +211,7 @@ def run_transcription(
     repetition_guard: bool,
     set_progress: ProgressCallback,
     log_stitch: StitchLogCallback | None = None,
+    vad_cut_threshold: float | None = None,
 ) -> dict[str, Any]:
     audio_duration_seconds = probe_duration_seconds(input_path)
     chunk_seconds = max(int(chunk_seconds), 0)
@@ -222,6 +231,7 @@ def run_transcription(
             beam_size=beam_size,
             best_of=best_of,
             vad_threshold=vad_threshold,
+            vad_cut_threshold=vad_cut_threshold,
             vad_max_speech_duration_s=vad_max_speech_duration_s,
             vad_min_silence_duration_ms=vad_min_silence_duration_ms,
             vad_speech_pad_ms=vad_speech_pad_ms,
@@ -371,6 +381,7 @@ def _run_chunked_transcription(
     audio_duration_seconds: float,
     set_progress: ProgressCallback,
     log_stitch: StitchLogCallback | None,
+    vad_cut_threshold: float | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     chunks_dir = job_dir / "chunks"
@@ -390,6 +401,7 @@ def _run_chunked_transcription(
         chunk_seconds=chunk_seconds,
         chunk_overlap_seconds=chunk_overlap_seconds,
         vad_threshold=vad_threshold,
+        vad_cut_threshold=vad_cut_threshold,
         vad_max_speech_duration_s=vad_max_speech_duration_s,
         vad_min_silence_duration_ms=vad_min_silence_duration_ms,
         vad_speech_pad_ms=vad_speech_pad_ms,
@@ -615,14 +627,17 @@ def build_stitch_variants(
             window = item["window"]
             chunk_segments = item["segments"]
             warning = item["warning"]
+            boundary_overlap_seconds = window.previous_overlap_seconds if window.index > 0 else 0
             all_segments, audit = stitch_utils.merge_chunk_segments_with_audit(
                 all_segments,
                 chunk_segments,
                 previous_chunk_index=window.index - 1,
                 next_chunk_index=window.index,
                 overlap_start_seconds=window.start_seconds,
-                overlap_end_seconds=window.start_seconds + chunk_overlap_seconds if window.index > 0 else None,
-                overlap_seconds=chunk_overlap_seconds,
+                overlap_end_seconds=window.start_seconds + boundary_overlap_seconds if window.index > 0 else None,
+                overlap_seconds=boundary_overlap_seconds,
+                leading_overlap_seconds=boundary_overlap_seconds,
+                trailing_overlap_seconds=window.next_overlap_seconds,
                 chunk_start_seconds=window.start_seconds,
                 chunk_end_seconds=window.start_seconds + window.duration_seconds,
                 is_first_chunk=window.index == 0,
@@ -914,7 +929,15 @@ def build_chunk_windows(
         duration = min(float(chunk_seconds), audio_duration_seconds - start)
         if duration <= 0:
             break
-        windows.append(ChunkWindow(index=index, start_seconds=round(start, 3), duration_seconds=round(duration, 3)))
+        windows.append(
+            ChunkWindow(
+                index=index,
+                start_seconds=round(start, 3),
+                duration_seconds=round(duration, 3),
+                previous_overlap_seconds=overlap_seconds if index > 0 else 0,
+                next_overlap_seconds=overlap_seconds,
+            )
+        )
         if start + duration >= audio_duration_seconds:
             break
         start += step
@@ -933,6 +956,7 @@ def build_chunk_window_plan(
     vad_max_speech_duration_s: int,
     vad_min_silence_duration_ms: int,
     vad_speech_pad_ms: int,
+    vad_cut_threshold: float | None = None,
 ) -> ChunkWindowPlan:
     fixed_windows = build_chunk_windows(
         audio_duration_seconds=audio_duration_seconds,
@@ -952,17 +976,18 @@ def build_chunk_window_plan(
         vad_output = run_vad_speech_segments(
             input_path=input_path,
             settings=settings,
-            vad_threshold=vad_threshold,
+            vad_threshold=vad_threshold if vad_cut_threshold is None else vad_cut_threshold,
             vad_max_speech_duration_s=vad_max_speech_duration_s,
             vad_min_silence_duration_ms=vad_min_silence_duration_ms,
             vad_speech_pad_ms=vad_speech_pad_ms,
         )
         speech_segments = parse_vad_speech_segments(vad_output)
-        windows, decisions = build_silence_aligned_chunk_windows(
+        windows, decisions = build_mixed_aligned_chunk_windows(
             audio_duration_seconds=audio_duration_seconds,
             chunk_seconds=chunk_seconds,
             speech_segments=speech_segments,
             silence_min_duration_ms=vad_min_silence_duration_ms,
+            overlap_seconds=chunk_overlap_seconds,
         )
     except (OSError, ValueError) as exc:
         return _fixed_chunk_fallback_plan(
@@ -971,10 +996,16 @@ def build_chunk_window_plan(
             reason=str(exc),
         )
 
+    strategy = "vad_silence"
+    effective_overlap = 0
+    if any(item.cut_type == "hard_fallback" for item in decisions):
+        strategy = "mixed"
+        effective_overlap = chunk_overlap_seconds
+
     return ChunkWindowPlan(
-        strategy="vad_silence",
+        strategy=strategy,
         windows=windows,
-        overlap_seconds=0,
+        overlap_seconds=effective_overlap,
         warnings=[],
         cut_decisions=decisions,
     )
@@ -1021,14 +1052,26 @@ def run_vad_speech_segments(
 
 
 def parse_vad_speech_segments(output: str) -> list[VadSpeechSegment]:
-    segment_re = re.compile(
+    vad_log_re = re.compile(
+        r"VAD segment\s+\d+:\s+start\s*=\s*([0-9]+(?:\.[0-9]+)?),\s+end\s*=\s*([0-9]+(?:\.[0-9]+)?)",
+        re.IGNORECASE,
+    )
+    segments = _parse_vad_segment_matches(vad_log_re.finditer(output), scale=1.0)
+    if segments:
+        return segments
+
+    speech_segment_re = re.compile(
         r"Speech segment\s+\d+:\s+start\s*=\s*([0-9]+(?:\.[0-9]+)?),\s+end\s*=\s*([0-9]+(?:\.[0-9]+)?)",
         re.IGNORECASE,
     )
+    return _parse_vad_segment_matches(speech_segment_re.finditer(output), scale=0.01)
+
+
+def _parse_vad_segment_matches(matches: Any, *, scale: float) -> list[VadSpeechSegment]:
     segments: list[VadSpeechSegment] = []
-    for match in segment_re.finditer(output):
-        start = float(match.group(1))
-        end = float(match.group(2))
+    for match in matches:
+        start = float(match.group(1)) * scale
+        end = float(match.group(2)) * scale
         if end <= start:
             continue
         segments.append(VadSpeechSegment(start_seconds=round(start, 3), end_seconds=round(end, 3)))
@@ -1081,6 +1124,78 @@ def build_silence_aligned_chunk_windows(
     windows = _windows_from_cuts(audio_duration_seconds=audio_duration_seconds, cuts=cuts)
     if not windows:
         raise ValueError("Silence-aligned cuts did not produce any chunk windows")
+    return windows, decisions
+
+
+def build_mixed_aligned_chunk_windows(
+    *,
+    audio_duration_seconds: float,
+    chunk_seconds: int,
+    speech_segments: list[VadSpeechSegment],
+    silence_min_duration_ms: int,
+    overlap_seconds: int,
+) -> tuple[list[ChunkWindow], list[SilenceCutDecision]]:
+    if audio_duration_seconds <= 0:
+        return [], []
+    chunk_seconds = max(int(chunk_seconds), 1)
+    min_silence_seconds = max(float(silence_min_duration_ms) / 1000.0, 0.0)
+    min_chunk_duration = chunk_seconds / 2.0
+    search_radius = min(chunk_seconds / 2.0, VAD_SILENCE_SEARCH_RADIUS_CAP_SECONDS)
+    silences = _infer_silence_gaps(
+        speech_segments=speech_segments,
+        audio_duration_seconds=audio_duration_seconds,
+        min_silence_seconds=min_silence_seconds,
+    )
+
+    decisions: list[SilenceCutDecision] = []
+    previous_cut = 0.0
+    target = float(chunk_seconds)
+    while target < audio_duration_seconds:
+        if audio_duration_seconds - target < min_chunk_duration:
+            break
+
+        decision = _select_silence_cut(
+            target_seconds=target,
+            search_radius_seconds=search_radius,
+            silences=silences,
+        )
+        if (
+            decision is not None
+            and decision.selected_seconds - previous_cut >= min_chunk_duration
+            and audio_duration_seconds - decision.selected_seconds >= min_chunk_duration
+        ):
+            decisions.append(decision)
+            previous_cut = decision.selected_seconds
+            target += chunk_seconds
+            continue
+
+        reason = "No usable silence found near target cut"
+        if decision is not None and decision.selected_seconds - previous_cut < min_chunk_duration:
+            reason = "Selected silence would create a short previous chunk"
+        elif decision is not None and audio_duration_seconds - decision.selected_seconds < min_chunk_duration:
+            reason = "Selected silence would create a short final chunk"
+
+        if target - previous_cut >= min_chunk_duration:
+            decisions.append(
+                SilenceCutDecision(
+                    target_seconds=target,
+                    selected_seconds=round(target, 3),
+                    silence_start_seconds=round(target, 3),
+                    silence_end_seconds=round(target, 3),
+                    cut_type="hard_fallback",
+                    reason=reason,
+                )
+            )
+            previous_cut = target
+        target += chunk_seconds
+
+    windows = _windows_from_cut_decisions(
+        audio_duration_seconds=audio_duration_seconds,
+        decisions=decisions,
+        overlap_seconds=overlap_seconds,
+    )
+    if not windows:
+        raise ValueError("Mixed chunk planning did not produce any chunk windows")
     return windows, decisions
 
 
@@ -1148,6 +1263,43 @@ def _windows_from_cuts(*, audio_duration_seconds: float, cuts: list[float]) -> l
         if duration <= 0:
             continue
         windows.append(ChunkWindow(index=index, start_seconds=round(start, 3), duration_seconds=duration))
+    return windows
+
+
+def _windows_from_cut_decisions(
+    *,
+    audio_duration_seconds: float,
+    decisions: list[SilenceCutDecision],
+    overlap_seconds: int,
+) -> list[ChunkWindow]:
+    boundaries = [0.0]
+    for decision in decisions:
+        rounded = round(decision.selected_seconds, 3)
+        if rounded <= boundaries[-1] or rounded >= audio_duration_seconds:
+            continue
+        boundaries.append(rounded)
+    boundaries.append(round(audio_duration_seconds, 3))
+
+    windows: list[ChunkWindow] = []
+    overlap_seconds = max(int(overlap_seconds), 0)
+    for index, (boundary_start, boundary_end) in enumerate(zip(boundaries, boundaries[1:])):
+        previous_decision = decisions[index - 1] if index > 0 and index - 1 < len(decisions) else None
+        next_decision = decisions[index] if index < len(decisions) else None
+        requested_overlap = overlap_seconds if previous_decision and previous_decision.cut_type == "hard_fallback" else 0
+        next_overlap = overlap_seconds if next_decision and next_decision.cut_type == "hard_fallback" else 0
+        start = max(boundary_start - requested_overlap, 0.0)
+        duration = round(boundary_end - start, 3)
+        if duration <= 0:
+            continue
+        windows.append(
+            ChunkWindow(
+                index=index,
+                start_seconds=round(start, 3),
+                duration_seconds=duration,
+                previous_overlap_seconds=int(round(boundary_start - start)),
+                next_overlap_seconds=next_overlap,
+            )
+        )
     return windows
 
 
