@@ -997,10 +997,9 @@ def build_chunk_window_plan(
         )
 
     strategy = "vad_silence"
-    effective_overlap = 0
+    effective_overlap = chunk_overlap_seconds
     if any(item.cut_type == "hard_fallback" for item in decisions):
         strategy = "mixed"
-        effective_overlap = chunk_overlap_seconds
 
     return ChunkWindowPlan(
         strategy=strategy,
@@ -1285,8 +1284,8 @@ def _windows_from_cut_decisions(
     for index, (boundary_start, boundary_end) in enumerate(zip(boundaries, boundaries[1:])):
         previous_decision = decisions[index - 1] if index > 0 and index - 1 < len(decisions) else None
         next_decision = decisions[index] if index < len(decisions) else None
-        requested_overlap = overlap_seconds if previous_decision and previous_decision.cut_type == "hard_fallback" else 0
-        next_overlap = overlap_seconds if next_decision and next_decision.cut_type == "hard_fallback" else 0
+        requested_overlap = overlap_seconds if previous_decision else 0
+        next_overlap = overlap_seconds if next_decision else 0
         start = max(boundary_start - requested_overlap, 0.0)
         duration = round(boundary_end - start, 3)
         if duration <= 0:
@@ -1793,20 +1792,34 @@ def _extract_segments(
     previous_token_end_raw: float | None = None
     for item in source_segments:
         segment_text = (item.get("text") or item.get("transcript") or "").strip()
-        start, end = _extract_segment_times(item)
-        start = start + offset_seconds
-        end = end + offset_seconds
+        raw_start, raw_end = _extract_segment_times(item)
+        start = raw_start + offset_seconds
+        end = raw_end + offset_seconds
         segment_time_origin = start
         current_token_time_origin = None
         token_start_raw, token_end_raw = _token_time_bounds(item)
         if token_start_raw is not None and token_end_raw is not None:
-            token_looks_relative = token_start_raw + offset_seconds < segment_time_origin - 1.0
+            token_looks_relative = _token_bounds_look_relative_to_segment(
+                token_start_raw=token_start_raw,
+                token_end_raw=token_end_raw,
+                segment_start_raw=raw_start,
+                segment_end_raw=raw_end,
+            )
             if token_looks_relative:
                 token_reset = previous_token_end_raw is not None and token_start_raw < previous_token_end_raw - 1.0
                 if token_time_origin is None or token_reset:
                     token_time_origin = segment_time_origin
                 current_token_time_origin = token_time_origin
                 previous_token_end_raw = token_end_raw
+            elif _token_bounds_look_vad_shifted(
+                token_start_raw=token_start_raw,
+                token_end_raw=token_end_raw,
+                segment_start_raw=raw_start,
+                segment_end_raw=raw_end,
+            ):
+                current_token_time_origin = segment_time_origin - token_start_raw
+                token_time_origin = None
+                previous_token_end_raw = None
             else:
                 token_time_origin = None
                 previous_token_end_raw = None
@@ -1914,6 +1927,43 @@ def _extract_words(
 
     flush()
     return words
+
+
+def _token_bounds_look_relative_to_segment(
+    *,
+    token_start_raw: float,
+    token_end_raw: float,
+    segment_start_raw: float,
+    segment_end_raw: float,
+) -> bool:
+    if token_start_raw >= segment_start_raw - 1.0:
+        return False
+
+    segment_duration = max(segment_end_raw - segment_start_raw, 0.0)
+    token_span_fits_segment = token_end_raw <= max(segment_duration + 5.0, 30.0)
+    if not token_span_fits_segment:
+        return False
+
+    token_starts_far_before_segment = segment_start_raw - token_start_raw > 5.0
+    token_ends_before_segment = segment_start_raw - token_end_raw > 1.0
+    return token_starts_far_before_segment or token_ends_before_segment
+
+
+def _token_bounds_look_vad_shifted(
+    *,
+    token_start_raw: float,
+    token_end_raw: float,
+    segment_start_raw: float,
+    segment_end_raw: float,
+) -> bool:
+    if token_start_raw >= segment_start_raw:
+        return False
+    if segment_start_raw - token_end_raw <= 2.0:
+        return False
+
+    segment_duration = max(segment_end_raw - segment_start_raw, 0.0)
+    token_duration = max(token_end_raw - token_start_raw, 0.0)
+    return token_duration <= max(segment_duration + 5.0, 30.0)
 
 
 def _token_time_bounds(segment: dict[str, Any]) -> tuple[float | None, float | None]:

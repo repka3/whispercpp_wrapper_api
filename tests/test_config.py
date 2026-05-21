@@ -68,7 +68,7 @@ class SettingsTests(unittest.TestCase):
         ):
             settings = get_settings()
 
-        self.assertEqual(settings.stitch_method, "fuzzy")
+        self.assertEqual(settings.stitch_method, "center_align")
 
     def test_resolve_model_rejects_unknown_or_unsafe_names(self) -> None:
         settings = self._settings()

@@ -382,7 +382,7 @@
               <label>
                 Stitch method
                 <select id="stitchMethod" name="stitch_method">
-                  <option value="fuzzy" selected>Loading stitch methods...</option>
+                  <option value="center_align" selected>Loading stitch methods...</option>
                 </select>
               </label>
               <label>
@@ -471,7 +471,7 @@
           vad_speech_pad_ms: Number(document.querySelector("#vadPad").value || 400),
           chunk_seconds: Number(document.querySelector("#chunkSeconds").value || 0),
           chunk_overlap_seconds: Number(document.querySelector("#chunkOverlap").value || 30),
-          stitch_method: stitchMethodSelect.value || "fuzzy",
+          stitch_method: stitchMethodSelect.value || "center_align",
           repetition_guard: document.querySelector("#repetitionGuard").value === "true",
         };
       }
@@ -675,7 +675,7 @@
         try {
           const payload = await requestJson("/stitch-methods");
           const methods = payload.methods || [];
-          const defaultMethod = payload.default || "fuzzy";
+          const defaultMethod = payload.default || "center_align";
           if (!methods.length) {
             throw new Error("No stitch methods found.");
           }
@@ -684,7 +684,7 @@
           );
           stitchMethodSelect.disabled = false;
         } catch (error) {
-          stitchMethodSelect.replaceChildren(new Option("fuzzy", "fuzzy", true, true));
+          stitchMethodSelect.replaceChildren(new Option("center align", "center_align", true, true));
           stitchMethodSelect.disabled = false;
           showError(error.message);
         }

@@ -4,6 +4,7 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +21,10 @@ from .whisper import (
 
 
 DEFAULT_CHUNK_SECONDS = [120, 300]
-DEFAULT_STITCH_METHODS = ["fuzzy", "safe_zone"]
+DEFAULT_STITCH_METHODS = ["fuzzy", "safe_zone", "word_align", "center_align"]
 DEFAULT_VAD_THRESHOLD = 0.01
 DEFAULT_VAD_CUT_THRESHOLD = 0.5
+EXACT_WER_CELL_LIMIT = 10_000_000
 SUMMARY_COLUMNS = [
     "case",
     "mode",
@@ -90,6 +92,9 @@ def compute_wer(reference: str, hypothesis: str) -> WerResult:
     hyp_words = normalize_for_wer(hypothesis).split()
     ref_len = len(ref_words)
     hyp_len = len(hyp_words)
+    if ref_len * hyp_len > EXACT_WER_CELL_LIMIT:
+        return _compute_wer_blockwise(ref_words, hyp_words)
+
     dp: list[list[tuple[int, int, int, int, str | None]]] = [
         [(0, 0, 0, 0, None) for _ in range(hyp_len + 1)] for _ in range(ref_len + 1)
     ]
@@ -152,6 +157,80 @@ def compute_wer(reference: str, hypothesis: str) -> WerResult:
         hypothesis_words=hyp_len,
         operations=operations,
     )
+
+
+def _compute_wer_blockwise(ref_words: list[str], hyp_words: list[str]) -> WerResult:
+    matcher = SequenceMatcher(None, ref_words, hyp_words, autojunk=True)
+    substitutions = 0
+    deletions = 0
+    insertions = 0
+    operations: list[dict[str, str]] = []
+
+    for op, ref_start, ref_end, hyp_start, hyp_end in matcher.get_opcodes():
+        ref_block = ref_words[ref_start:ref_end]
+        hyp_block = hyp_words[hyp_start:hyp_end]
+        if op == "equal":
+            continue
+        if op == "delete":
+            deletions += len(ref_block)
+            continue
+        if op == "insert":
+            insertions += len(hyp_block)
+            continue
+
+        sub, delete, insert = _edit_counts_for_block(ref_block, hyp_block)
+        substitutions += sub
+        deletions += delete
+        insertions += insert
+
+    cost = substitutions + deletions + insertions
+    ref_len = len(ref_words)
+    wer = 0.0 if ref_len == 0 and cost == 0 else (1.0 if ref_len == 0 else cost / ref_len)
+    return WerResult(
+        wer=wer,
+        substitutions=substitutions,
+        deletions=deletions,
+        insertions=insertions,
+        reference_words=ref_len,
+        hypothesis_words=len(hyp_words),
+        operations=operations,
+    )
+
+
+def _edit_counts_for_block(ref_words: list[str], hyp_words: list[str]) -> tuple[int, int, int]:
+    if not ref_words:
+        return 0, 0, len(hyp_words)
+    if not hyp_words:
+        return 0, len(ref_words), 0
+    if len(ref_words) * len(hyp_words) > EXACT_WER_CELL_LIMIT:
+        substitutions = min(len(ref_words), len(hyp_words))
+        deletions = max(len(ref_words) - len(hyp_words), 0)
+        insertions = max(len(hyp_words) - len(ref_words), 0)
+        return substitutions, deletions, insertions
+
+    previous = [(j, 0, 0, j) for j in range(len(hyp_words) + 1)]
+    for i, ref_word in enumerate(ref_words, start=1):
+        current: list[tuple[int, int, int, int]] = [(i, 0, i, 0)]
+        for j, hyp_word in enumerate(hyp_words, start=1):
+            if ref_word == hyp_word:
+                current.append(previous[j - 1])
+                continue
+            sub_cost, sub_s, sub_d, sub_i = previous[j - 1]
+            del_cost, del_s, del_d, del_i = previous[j]
+            ins_cost, ins_s, ins_d, ins_i = current[j - 1]
+            current.append(
+                min(
+                    [
+                        (sub_cost + 1, sub_s + 1, sub_d, sub_i),
+                        (del_cost + 1, del_s, del_d + 1, del_i),
+                        (ins_cost + 1, ins_s, ins_d, ins_i + 1),
+                    ],
+                    key=lambda item: (item[0], item[1], item[2], item[3]),
+                )
+            )
+        previous = current
+    _cost, substitutions, deletions, insertions = previous[-1]
+    return substitutions, deletions, insertions
 
 
 def run_golden_debug(
@@ -415,7 +494,7 @@ def build_planner_diagnostics(
             )
             cut_decisions = [item.as_dict() for item in decisions]
             strategy = "mixed" if any(item.cut_type == "hard_fallback" for item in decisions) else "vad_silence"
-            effective_overlap = chunk_overlap_seconds if strategy == "mixed" else 0
+            effective_overlap = chunk_overlap_seconds
         except (OSError, ValueError) as exc:
             strategy = "fixed_fallback"
             effective_overlap = chunk_overlap_seconds

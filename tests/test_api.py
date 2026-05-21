@@ -37,7 +37,7 @@ class ApiModelTests(unittest.TestCase):
             best_of=3,
             chunk_seconds=1800,
             chunk_overlap_seconds=30,
-            stitch_method="fuzzy",
+            stitch_method="center_align",
             repetition_guard=True,
         )
 
@@ -54,7 +54,10 @@ class ApiModelTests(unittest.TestCase):
         with self._patch_app():
             response = main.stitch_methods()
 
-        self.assertEqual(response, {"methods": ["fuzzy", "safe_zone"], "default": "fuzzy"})
+        self.assertEqual(
+            response,
+            {"methods": ["center_align", "fuzzy", "safe_zone", "word_align"], "default": "center_align"},
+        )
 
     def test_path_transcription_requires_model(self) -> None:
         with self.assertRaises(ValidationError):
@@ -78,10 +81,10 @@ class ApiModelTests(unittest.TestCase):
         request = main.PathTranscriptionRequest(
             path=str(self.audio),
             model="ggml-large-v3.bin",
-            stitch_methods=["fuzzy", "safe_zone", "fuzzy"],
+            stitch_methods=["fuzzy", "safe_zone", "word_align", "center_align", "fuzzy"],
         )
 
-        self.assertEqual(request.stitch_methods, ["fuzzy", "safe_zone"])
+        self.assertEqual(request.stitch_methods, ["fuzzy", "safe_zone", "word_align", "center_align"])
 
     def test_path_transcription_rejects_unknown_stitch_methods(self) -> None:
         with self.assertRaises(ValidationError):

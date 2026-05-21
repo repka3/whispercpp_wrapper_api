@@ -18,6 +18,7 @@ dist/
 # Runtime job data: uploads, logs, raw whisper output, normalized results
 jobs/
 golden_runs/
+golden_long/
 
 # Local environment overrides
 .env

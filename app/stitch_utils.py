@@ -19,11 +19,47 @@ class TokenOverlap:
         return self.covered_count / self.token_count
 
 
+@dataclass(frozen=True)
+class WordEntry:
+    token: str
+    word: str
+    start: float
+    end: float
+    segment_index: int
+    word_index: int
+
+
+@dataclass(frozen=True)
+class WordAlignment:
+    trim_word_count: int
+    existing_start: int
+    existing_end: int
+    incoming_start: int
+    incoming_end: int
+    match_token_count: int
+    score: float
+
+
+@dataclass(frozen=True)
+class CenterSeam:
+    seam_time: float
+    incoming_trim_word_count: int
+    existing_start: int
+    existing_end: int
+    incoming_start: int
+    incoming_end: int
+    match_offset: int
+    match_token_count: int
+    score: float
+
+
 MIN_OVERLAP_TOKENS = 4
 DROP_OVERLAP_COVERAGE = 0.86
 BOUNDARY_CONTEXT_SECONDS = 60.0
 BOUNDARY_CONTEXT_SEGMENTS = 40
-STITCH_METHODS = {"fuzzy", "safe_zone"}
+WORD_ALIGN_MIN_MATCH_TOKENS = 4
+WORD_ALIGN_INCOMING_CONTEXT_SECONDS = 90.0
+STITCH_METHODS = {"fuzzy", "safe_zone", "word_align", "center_align"}
 
 StitchStrategy = Callable[..., tuple[list[dict[str, Any]], dict[str, Any] | None]]
 
@@ -95,6 +131,26 @@ def merge_chunk_segments_with_audit(
             chunk_end_seconds=chunk_end_seconds,
             is_first_chunk=is_first_chunk,
             is_last_chunk=is_last_chunk,
+            incoming_warning=incoming_warning,
+        )
+    if method == "word_align":
+        return merge_chunk_segments_word_align(
+            existing,
+            incoming,
+            previous_chunk_index=previous_chunk_index,
+            next_chunk_index=next_chunk_index,
+            overlap_start_seconds=overlap_start_seconds,
+            overlap_end_seconds=overlap_end_seconds,
+            incoming_warning=incoming_warning,
+        )
+    if method == "center_align":
+        return merge_chunk_segments_center_align(
+            existing,
+            incoming,
+            previous_chunk_index=previous_chunk_index,
+            next_chunk_index=next_chunk_index,
+            overlap_start_seconds=overlap_start_seconds,
+            overlap_end_seconds=overlap_end_seconds,
             incoming_warning=incoming_warning,
         )
     return merge_chunk_segments_fuzzy(
@@ -242,6 +298,158 @@ def merge_chunk_segments_fuzzy(
             "kept_low_confidence_overlap": kept_low_confidence_count,
         },
     )
+    return merged, audit
+
+
+def merge_chunk_segments_word_align(
+    existing: list[dict[str, Any]],
+    incoming: list[dict[str, Any]],
+    *,
+    previous_chunk_index: int | None,
+    next_chunk_index: int | None,
+    overlap_start_seconds: float,
+    overlap_end_seconds: float | None,
+    incoming_warning: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    if not existing or overlap_end_seconds is None:
+        return existing + incoming, None
+
+    context_segments = _boundary_context_segments(existing, overlap_start_seconds)
+    incoming_context_segments = [
+        item for item in incoming if float(item["start"]) <= overlap_end_seconds + WORD_ALIGN_INCOMING_CONTEXT_SECONDS
+    ]
+    existing_words = _collect_word_entries(context_segments)
+    incoming_words = _collect_word_entries(incoming_context_segments)
+    alignment = _find_word_alignment(
+        existing_words=existing_words,
+        incoming_words=incoming_words,
+        overlap_start_seconds=overlap_start_seconds,
+        overlap_end_seconds=overlap_end_seconds,
+    )
+
+    if alignment is None:
+        merged, audit = merge_chunk_segments_fuzzy(
+            existing,
+            incoming,
+            previous_chunk_index=previous_chunk_index,
+            next_chunk_index=next_chunk_index,
+            overlap_start_seconds=overlap_start_seconds,
+            overlap_end_seconds=overlap_end_seconds,
+            incoming_warning=incoming_warning,
+        )
+        if audit is not None:
+            audit["method"] = "word_align"
+            audit["fallback_method"] = "fuzzy"
+            audit["word_alignment"] = None
+        return merged, audit
+
+    word_trimmed_incoming, word_dropped_segments, word_trimmed_segments = _trim_incoming_prefix_by_word_count(
+        incoming,
+        trim_word_count=alignment.trim_word_count,
+    )
+
+    merged, audit = merge_chunk_segments_fuzzy(
+        existing,
+        word_trimmed_incoming,
+        previous_chunk_index=previous_chunk_index,
+        next_chunk_index=next_chunk_index,
+        overlap_start_seconds=overlap_start_seconds,
+        overlap_end_seconds=overlap_end_seconds,
+        incoming_warning=incoming_warning,
+    )
+    if audit is None:
+        return merged, None
+    audit["method"] = "word_align"
+    audit["word_alignment"] = _audit_word_alignment(alignment, existing_words, incoming_words)
+    audit["word_aligned_prefix"] = {
+        "incoming_before_word_align": len(incoming),
+        "incoming_after_word_align": len(word_trimmed_incoming),
+        "dropped_segments": word_dropped_segments,
+        "trimmed_segments": word_trimmed_segments,
+    }
+    audit["counts"]["incoming_before_word_align"] = len(incoming)
+    audit["counts"]["word_aligned_prefix_dropped"] = len(word_dropped_segments)
+    audit["counts"]["word_aligned_prefix_trimmed"] = len(word_trimmed_segments)
+    return merged, audit
+
+
+def merge_chunk_segments_center_align(
+    existing: list[dict[str, Any]],
+    incoming: list[dict[str, Any]],
+    *,
+    previous_chunk_index: int | None,
+    next_chunk_index: int | None,
+    overlap_start_seconds: float,
+    overlap_end_seconds: float | None,
+    incoming_warning: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    if not existing or overlap_end_seconds is None:
+        return existing + incoming, None
+
+    context_segments = _boundary_context_segments(existing, overlap_start_seconds)
+    incoming_context_segments = [
+        item for item in incoming if float(item["start"]) <= overlap_end_seconds + WORD_ALIGN_INCOMING_CONTEXT_SECONDS
+    ]
+    existing_words = _collect_word_entries(context_segments)
+    incoming_words = _collect_word_entries(incoming_context_segments)
+    seam = _find_center_seam(
+        existing_words=existing_words,
+        incoming_words=incoming_words,
+        overlap_start_seconds=overlap_start_seconds,
+        overlap_end_seconds=overlap_end_seconds,
+    )
+
+    if seam is None:
+        merged, audit = merge_chunk_segments_fuzzy(
+            existing,
+            incoming,
+            previous_chunk_index=previous_chunk_index,
+            next_chunk_index=next_chunk_index,
+            overlap_start_seconds=overlap_start_seconds,
+            overlap_end_seconds=overlap_end_seconds,
+            incoming_warning=incoming_warning,
+        )
+        if audit is not None:
+            audit["method"] = "center_align"
+            audit["fallback_method"] = "fuzzy"
+            audit["center_alignment"] = None
+        return merged, audit
+
+    trimmed_existing, existing_dropped, existing_trimmed = _trim_existing_suffix_at_time(
+        existing,
+        seam_time=seam.seam_time,
+    )
+    trimmed_incoming, incoming_dropped, incoming_trimmed = _trim_incoming_prefix_by_word_count(
+        incoming,
+        trim_word_count=seam.incoming_trim_word_count,
+    )
+    merged, audit = merge_chunk_segments_fuzzy(
+        trimmed_existing,
+        trimmed_incoming,
+        previous_chunk_index=previous_chunk_index,
+        next_chunk_index=next_chunk_index,
+        overlap_start_seconds=overlap_start_seconds,
+        overlap_end_seconds=overlap_end_seconds,
+        incoming_warning=incoming_warning,
+    )
+    if audit is None:
+        return merged, None
+    audit["method"] = "center_align"
+    audit["center_alignment"] = _audit_center_seam(seam, existing_words, incoming_words)
+    audit["center_trim"] = {
+        "existing_before_center_align": len(existing),
+        "existing_after_center_align": len(trimmed_existing),
+        "incoming_before_center_align": len(incoming),
+        "incoming_after_center_align": len(trimmed_incoming),
+        "existing_dropped_segments": existing_dropped,
+        "existing_trimmed_segments": existing_trimmed,
+        "incoming_dropped_segments": incoming_dropped,
+        "incoming_trimmed_segments": incoming_trimmed,
+    }
+    audit["counts"]["existing_center_dropped"] = len(existing_dropped)
+    audit["counts"]["existing_center_trimmed"] = len(existing_trimmed)
+    audit["counts"]["incoming_center_dropped"] = len(incoming_dropped)
+    audit["counts"]["incoming_center_trimmed"] = len(incoming_trimmed)
     return merged, audit
 
 
@@ -434,6 +642,330 @@ def _measure_token_overlap(context_tokens: list[str], segment_tokens: list[str])
         suffix_count=suffix_count,
         longest_run=longest_run,
     )
+
+
+def _collect_word_entries(segments: list[dict[str, Any]]) -> list[WordEntry]:
+    entries: list[WordEntry] = []
+    for segment_index, segment in enumerate(segments):
+        words = segment.get("words") or []
+        if not isinstance(words, list):
+            continue
+        for word_index, word in enumerate(words):
+            if not isinstance(word, dict):
+                continue
+            token = _normalize_for_compare(str(word.get("word", "")))
+            if not token:
+                continue
+            try:
+                start = float(word.get("start", segment.get("start", 0.0)))
+                end = float(word.get("end", word.get("start", segment.get("end", 0.0))))
+            except (TypeError, ValueError):
+                continue
+            entries.append(
+                WordEntry(
+                    token=token,
+                    word=str(word.get("word", "")),
+                    start=round(start, 3),
+                    end=round(max(start, end), 3),
+                    segment_index=segment_index,
+                    word_index=word_index,
+                )
+            )
+    return entries
+
+
+def _find_word_alignment(
+    *,
+    existing_words: list[WordEntry],
+    incoming_words: list[WordEntry],
+    overlap_start_seconds: float,
+    overlap_end_seconds: float,
+) -> WordAlignment | None:
+    if not existing_words or not incoming_words:
+        return None
+
+    existing_tokens = [item.token for item in existing_words]
+    incoming_tokens = [item.token for item in incoming_words]
+    matcher = SequenceMatcher(None, existing_tokens, incoming_tokens, autojunk=False)
+    candidates: list[WordAlignment] = []
+    for existing_start, incoming_start, size in matcher.get_matching_blocks():
+        if size < WORD_ALIGN_MIN_MATCH_TOKENS:
+            continue
+        incoming_end = incoming_start + size
+        existing_end = existing_start + size
+        incoming_match_start = incoming_words[incoming_start].start
+        incoming_match_end = incoming_words[incoming_end - 1].end
+        existing_match_end = existing_words[existing_end - 1].end
+        if incoming_match_start > overlap_end_seconds:
+            continue
+        if incoming_match_end < overlap_start_seconds:
+            continue
+        if existing_match_end < overlap_start_seconds:
+            continue
+
+        incoming_overlap_bonus = max(overlap_end_seconds - incoming_match_start, 0.0)
+        incoming_prefix_penalty = incoming_start * 0.25
+        existing_tail_bonus = existing_end / max(len(existing_words), 1)
+        score = size + min(incoming_overlap_bonus, 5.0) + existing_tail_bonus - incoming_prefix_penalty
+        candidates.append(
+            WordAlignment(
+                trim_word_count=incoming_end,
+                existing_start=existing_start,
+                existing_end=existing_end,
+                incoming_start=incoming_start,
+                incoming_end=incoming_end,
+                match_token_count=size,
+                score=score,
+            )
+        )
+
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            item.score,
+            item.match_token_count,
+            item.incoming_end,
+            item.existing_end,
+            -item.incoming_start,
+        ),
+    )
+
+
+def _find_center_seam(
+    *,
+    existing_words: list[WordEntry],
+    incoming_words: list[WordEntry],
+    overlap_start_seconds: float,
+    overlap_end_seconds: float,
+) -> CenterSeam | None:
+    if not existing_words or not incoming_words:
+        return None
+
+    overlap_midpoint = (overlap_start_seconds + overlap_end_seconds) / 2.0
+    existing_tokens = [item.token for item in existing_words]
+    incoming_tokens = [item.token for item in incoming_words]
+    matcher = SequenceMatcher(None, existing_tokens, incoming_tokens, autojunk=False)
+    candidates: list[CenterSeam] = []
+    for existing_start, incoming_start, size in matcher.get_matching_blocks():
+        if size < WORD_ALIGN_MIN_MATCH_TOKENS:
+            continue
+        for offset in range(size):
+            existing_word = existing_words[existing_start + offset]
+            incoming_word = incoming_words[incoming_start + offset]
+            seam_time = (existing_word.end + incoming_word.end) / 2.0
+            if seam_time < overlap_start_seconds or seam_time > overlap_end_seconds:
+                continue
+
+            distance = abs(seam_time - overlap_midpoint)
+            edge_distance = min(seam_time - overlap_start_seconds, overlap_end_seconds - seam_time)
+            score = min(size, 40) + min(edge_distance, 5.0) - distance
+            candidates.append(
+                CenterSeam(
+                    seam_time=round(seam_time, 3),
+                    incoming_trim_word_count=incoming_start + offset + 1,
+                    existing_start=existing_start,
+                    existing_end=existing_start + size,
+                    incoming_start=incoming_start,
+                    incoming_end=incoming_start + size,
+                    match_offset=offset,
+                    match_token_count=size,
+                    score=score,
+                )
+            )
+
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            item.score,
+            -abs(item.seam_time - overlap_midpoint),
+            item.match_token_count,
+            item.seam_time,
+        ),
+    )
+
+
+def _trim_incoming_prefix_by_word_count(
+    incoming: list[dict[str, Any]],
+    *,
+    trim_word_count: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    kept: list[dict[str, Any]] = []
+    dropped_segments: list[dict[str, Any]] = []
+    trimmed_segments: list[dict[str, Any]] = []
+    remaining_to_trim = max(trim_word_count, 0)
+
+    for segment in incoming:
+        words = segment.get("words") or []
+        if not isinstance(words, list) or not words:
+            if remaining_to_trim > 0:
+                dropped_segments.append(_audit_segment(segment))
+                continue
+            kept.append(segment)
+            continue
+
+        word_count = len(words)
+        if remaining_to_trim >= word_count:
+            dropped_segments.append(_audit_segment(segment))
+            remaining_to_trim -= word_count
+            continue
+        if remaining_to_trim <= 0:
+            kept.append(segment)
+            continue
+
+        trimmed = _trim_segment_by_word_range(
+            segment,
+            keep_start_word=remaining_to_trim,
+            keep_end_word=word_count,
+        )
+        remaining_to_trim = 0
+        if trimmed is None:
+            dropped_segments.append(_audit_segment(segment))
+            continue
+        audited = _audit_segment(trimmed)
+        trimmed_segments.append(audited)
+        kept.append(trimmed)
+
+    return kept, dropped_segments, trimmed_segments
+
+
+def _trim_existing_suffix_at_time(
+    existing: list[dict[str, Any]],
+    *,
+    seam_time: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    kept: list[dict[str, Any]] = []
+    dropped_segments: list[dict[str, Any]] = []
+    trimmed_segments: list[dict[str, Any]] = []
+
+    for segment in existing:
+        start = float(segment.get("start", 0.0))
+        end = float(segment.get("end", start))
+        if end <= seam_time:
+            kept.append(segment)
+            continue
+        if start >= seam_time:
+            dropped_segments.append(_audit_segment(segment))
+            continue
+
+        words = segment.get("words") or []
+        if not isinstance(words, list) or not words:
+            midpoint = (start + end) / 2.0
+            if midpoint <= seam_time:
+                kept.append(segment)
+            else:
+                dropped_segments.append(_audit_segment(segment))
+            continue
+
+        keep_end_word = 0
+        for index, word in enumerate(words, start=1):
+            try:
+                word_end = float(word.get("end", word.get("start", end)))
+            except (TypeError, ValueError):
+                continue
+            if word_end <= seam_time:
+                keep_end_word = index
+
+        if keep_end_word <= 0:
+            dropped_segments.append(_audit_segment(segment))
+            continue
+        if keep_end_word >= len(words):
+            kept.append(segment)
+            continue
+
+        trimmed = _trim_segment_by_word_range(segment, keep_start_word=0, keep_end_word=keep_end_word)
+        if trimmed is None:
+            dropped_segments.append(_audit_segment(segment))
+            continue
+        audited = _audit_segment(trimmed)
+        trimmed_segments.append(audited)
+        kept.append(trimmed)
+
+    return kept, dropped_segments, trimmed_segments
+
+
+def _trim_segment_by_word_range(
+    segment: dict[str, Any],
+    *,
+    keep_start_word: int,
+    keep_end_word: int,
+) -> dict[str, Any] | None:
+    words = segment.get("words") or []
+    keep_start_word = min(max(keep_start_word, 0), len(words))
+    keep_end_word = max(min(keep_end_word, len(words)), 0)
+    if keep_start_word >= keep_end_word:
+        return None
+
+    kept_words = [_clip_word(word, start=None, end=None) for word in words[keep_start_word:keep_end_word]]
+    kept_words = [word for word in kept_words if word is not None]
+    if not kept_words:
+        return None
+    transcript = " ".join(str(word["word"]) for word in kept_words).strip()
+    if not transcript:
+        return None
+
+    start = min(float(word["start"]) for word in kept_words)
+    end = max(float(word["end"]) for word in kept_words)
+    trimmed = dict(segment)
+    trimmed["start"] = round(start, 3)
+    trimmed["end"] = round(max(start, end), 3)
+    trimmed["transcript"] = transcript
+    trimmed["words"] = kept_words
+    return trimmed
+
+
+def _audit_word_alignment(
+    alignment: WordAlignment,
+    existing_words: list[WordEntry],
+    incoming_words: list[WordEntry],
+) -> dict[str, Any]:
+    existing_match = existing_words[alignment.existing_start : alignment.existing_end]
+    incoming_match = incoming_words[alignment.incoming_start : alignment.incoming_end]
+    return {
+        "trim_word_count": alignment.trim_word_count,
+        "match_token_count": alignment.match_token_count,
+        "score": round(alignment.score, 3),
+        "existing_start": alignment.existing_start,
+        "existing_end": alignment.existing_end,
+        "incoming_start": alignment.incoming_start,
+        "incoming_end": alignment.incoming_end,
+        "existing_text": " ".join(item.word for item in existing_match),
+        "incoming_text": " ".join(item.word for item in incoming_match),
+        "existing_start_time": None if not existing_match else round(existing_match[0].start, 3),
+        "existing_end_time": None if not existing_match else round(existing_match[-1].end, 3),
+        "incoming_start_time": None if not incoming_match else round(incoming_match[0].start, 3),
+        "incoming_end_time": None if not incoming_match else round(incoming_match[-1].end, 3),
+    }
+
+
+def _audit_center_seam(
+    seam: CenterSeam,
+    existing_words: list[WordEntry],
+    incoming_words: list[WordEntry],
+) -> dict[str, Any]:
+    existing_match = existing_words[seam.existing_start : seam.existing_end]
+    incoming_match = incoming_words[seam.incoming_start : seam.incoming_end]
+    return {
+        "seam_time": seam.seam_time,
+        "seam_label": format_timestamp(seam.seam_time),
+        "incoming_trim_word_count": seam.incoming_trim_word_count,
+        "match_token_count": seam.match_token_count,
+        "match_offset": seam.match_offset,
+        "score": round(seam.score, 3),
+        "existing_start": seam.existing_start,
+        "existing_end": seam.existing_end,
+        "incoming_start": seam.incoming_start,
+        "incoming_end": seam.incoming_end,
+        "existing_text": " ".join(item.word for item in existing_match),
+        "incoming_text": " ".join(item.word for item in incoming_match),
+        "existing_start_time": None if not existing_match else round(existing_match[0].start, 3),
+        "existing_end_time": None if not existing_match else round(existing_match[-1].end, 3),
+        "incoming_start_time": None if not incoming_match else round(incoming_match[0].start, 3),
+        "incoming_end_time": None if not incoming_match else round(incoming_match[-1].end, 3),
+    }
 
 
 def _should_drop_overlap_duplicate(token_overlap: TokenOverlap) -> bool:

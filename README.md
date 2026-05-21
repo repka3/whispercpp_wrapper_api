@@ -10,7 +10,7 @@ Set `WHISPERCPP_BASE_DIR` to the local `whisper.cpp` checkout:
 WHISPERCPP_BASE_DIR=/path/to/whisper.cpp
 WHISPERCPP_CHUNK_SECONDS=0
 WHISPERCPP_CHUNK_OVERLAP_SECONDS=30
-WHISPERCPP_STITCH_METHOD=fuzzy
+WHISPERCPP_STITCH_METHOD=center_align
 WHISPERCPP_REPETITION_GUARD=true
 WHISPERCPP_VAD_CUT_THRESHOLD=0.5
 ```
@@ -40,7 +40,7 @@ Content-Type: application/json
   "vad_cut_threshold": 0.5,
   "chunk_seconds": 1800,
   "chunk_overlap_seconds": 30,
-  "stitch_method": "fuzzy",
+  "stitch_method": "center_align",
   "repetition_guard": true
 }
 ```
@@ -87,7 +87,14 @@ When chunking is enabled, the wrapper now tries silence-aligned cuts at each tar
 
 The targets are absolute. For example, with `chunk_seconds = 300`, target cuts stay near `300`, `600`, `900`, etc. If the first selected cut moves to `400`, the next target is still `600`, not `700`.
 
-For pure `vad_silence` chunking, the effective overlap is `0`, even if `chunk_overlap_seconds` was requested. For `mixed` chunking, VAD-silence boundaries use `0` overlap and hard fallback boundaries use the requested overlap. The original requested overlap is still reported in result metadata as `requested_overlap_seconds`.
+VAD-silence boundaries and hard fallback boundaries both use `chunk_overlap_seconds` as leading context for the next chunk. This gives the stitcher real duplicated audio to align while still selecting the logical cut from VAD silence when possible. The original requested overlap is reported in result metadata as `requested_overlap_seconds`.
+
+Available stitch methods:
+
+- `fuzzy`: drops or trims duplicate incoming segments by normalized token overlap.
+- `safe_zone`: keeps only the middle of each overlapped chunk window by segment midpoint.
+- `word_align`: aligns word timestamps across the boundary and trims the duplicate incoming word prefix, falling back to `fuzzy` if word timings are unavailable.
+- `center_align`: finds a shared word sequence near the overlap center, trims the previous chunk after that seam and the next chunk before it, then runs fuzzy dedupe on the remaining overlap. This is the default because it performed best overall in the golden WER runs and in the synthetic long-meeting run.
 
 ## Fixed Fallback
 
@@ -109,7 +116,7 @@ Chunked results include `decode.chunking` metadata:
 {
   "enabled": true,
   "chunk_seconds": 1800,
-  "overlap_seconds": 0,
+  "overlap_seconds": 30,
   "requested_overlap_seconds": 30,
   "strategy": "vad_silence",
   "silence_cuts": [
@@ -123,8 +130,8 @@ Chunked results include `decode.chunking` metadata:
     }
   ],
   "chunk_count": 2,
-  "stitch_method": "fuzzy",
-  "stitch_methods": ["fuzzy"],
+  "stitch_method": "center_align",
+  "stitch_methods": ["center_align"],
   "repetition_guard": true
 }
 ```
@@ -167,4 +174,4 @@ Full transcription comparison:
 
 The runner writes `summary.csv`, `summary.md`, and per-case diagnostics under `golden_runs/<timestamp>/`.
 It defaults to `vad_threshold=0.01` for transcription, `vad_cut_threshold=0.5` for cut planning,
-simulated chunk sizes `120 300`, and stitch variants `fuzzy safe_zone`.
+simulated chunk sizes `120 300`, and stitch variants `fuzzy safe_zone word_align center_align`.

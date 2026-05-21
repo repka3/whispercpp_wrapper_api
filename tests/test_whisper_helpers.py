@@ -125,11 +125,11 @@ class WhisperHelperTests(unittest.TestCase):
 
         self.assertEqual([item.cut_type for item in decisions], ["hard_fallback", "vad_silence"])
         self.assertEqual([item.selected_seconds for item in decisions], [300, 600])
-        self.assertEqual([item.start_seconds for item in windows], [0, 270, 600])
-        self.assertEqual([item.previous_overlap_seconds for item in windows], [0, 30, 0])
-        self.assertEqual([item.next_overlap_seconds for item in windows], [30, 0, 0])
+        self.assertEqual([item.start_seconds for item in windows], [0, 270, 570])
+        self.assertEqual([item.previous_overlap_seconds for item in windows], [0, 30, 30])
+        self.assertEqual([item.next_overlap_seconds for item in windows], [30, 30, 0])
 
-    def test_chunk_window_plan_uses_vad_silence_with_zero_overlap(self) -> None:
+    def test_chunk_window_plan_uses_vad_silence_with_overlap_context(self) -> None:
         import tempfile
 
         vad_output = "\n".join(
@@ -171,8 +171,9 @@ class WhisperHelperTests(unittest.TestCase):
             )
 
         self.assertEqual(plan.strategy, "vad_silence")
-        self.assertEqual(plan.overlap_seconds, 0)
-        self.assertEqual([item.start_seconds for item in plan.windows], [0, 400, 600])
+        self.assertEqual(plan.overlap_seconds, 30)
+        self.assertEqual([item.start_seconds for item in plan.windows], [0, 370, 570])
+        self.assertEqual([item.previous_overlap_seconds for item in plan.windows], [0, 30, 30])
         self.assertEqual(plan.warnings, [])
 
     def test_chunk_window_plan_falls_back_to_fixed_windows_when_vad_fails(self) -> None:
@@ -225,14 +226,14 @@ class WhisperHelperTests(unittest.TestCase):
         chunk_outputs = [
             {
                 "window": windows[0],
-                "segments": [self._segment(0, 2, "Ciao mondo")],
+                "segments": [self._word_segment(0, 2, "Ciao mondo")],
                 "warning": None,
             },
             {
                 "window": windows[1],
                 "segments": [
-                    self._segment(2, 2.5, "Ciao mondo"),
-                    self._segment(3, 4, "Nuovo testo"),
+                    self._word_segment(2, 2.5, "Ciao mondo"),
+                    self._word_segment(3, 4, "Nuovo testo"),
                 ],
                 "warning": None,
             },
@@ -246,7 +247,7 @@ class WhisperHelperTests(unittest.TestCase):
                 job_id="job-1",
                 job_dir=Path(temp_dir),
                 chunk_outputs=chunk_outputs,
-                stitch_methods=["fuzzy", "safe_zone"],
+                stitch_methods=["fuzzy", "safe_zone", "word_align", "center_align"],
                 chunk_overlap_seconds=1,
                 chunk_seconds=3,
                 repetition_guard=True,
@@ -256,10 +257,12 @@ class WhisperHelperTests(unittest.TestCase):
                 log_primary_method="fuzzy",
             )
 
-        self.assertEqual(set(variants), {"fuzzy", "safe_zone"})
+        self.assertEqual(set(variants), {"fuzzy", "safe_zone", "word_align", "center_align"})
         self.assertIn("Nuovo testo", variants["fuzzy"]["text"])
         self.assertEqual(variants["fuzzy"]["decode"]["chunking"]["stitch_method"], "fuzzy")
         self.assertEqual(variants["safe_zone"]["decode"]["chunking"]["stitch_method"], "safe_zone")
+        self.assertEqual(variants["word_align"]["decode"]["chunking"]["stitch_method"], "word_align")
+        self.assertEqual(variants["center_align"]["decode"]["chunking"]["stitch_method"], "center_align")
 
     def test_single_pass_transcription_does_not_create_stitch_variants(self) -> None:
         import tempfile
@@ -536,6 +539,59 @@ class WhisperHelperTests(unittest.TestCase):
         self.assertEqual(merged[1]["transcript"], "prima parole nuove")
         self.assertLess(merged[1]["end"], incoming[0]["end"])
 
+    def test_word_align_trims_duplicate_prefix_using_word_times(self) -> None:
+        existing = [
+            self._word_segment(8, 12, "cinque sei sette otto"),
+        ]
+        incoming = [
+            self._word_segment(8, 14, "cinque sei sette otto nove dieci"),
+        ]
+
+        merged, audit = merge_chunk_segments_with_audit(
+            existing,
+            incoming,
+            previous_chunk_index=0,
+            next_chunk_index=1,
+            overlap_start_seconds=8,
+            overlap_end_seconds=12,
+            overlap_seconds=4,
+            incoming_warning=None,
+            stitch_method="word_align",
+        )
+
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        self.assertEqual(audit["method"], "word_align")
+        self.assertEqual(audit["word_alignment"]["match_token_count"], 4)
+        self.assertEqual(merged[1]["transcript"], "nove dieci")
+        self.assertEqual([item["word"] for item in merged[1]["words"]], ["nove", "dieci"])
+
+    def test_center_align_uses_center_seam_and_trims_both_sides(self) -> None:
+        existing = [
+            self._word_segment(4, 10, "pre quattro cinque sei post old"),
+        ]
+        incoming = [
+            self._word_segment(5, 11, "quattro cinque sei post new"),
+        ]
+
+        merged, audit = merge_chunk_segments_with_audit(
+            existing,
+            incoming,
+            previous_chunk_index=0,
+            next_chunk_index=1,
+            overlap_start_seconds=5,
+            overlap_end_seconds=9,
+            overlap_seconds=4,
+            incoming_warning=None,
+            stitch_method="center_align",
+        )
+
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        self.assertEqual(audit["method"], "center_align")
+        self.assertIn("center_alignment", audit)
+        self.assertEqual([item["transcript"] for item in merged], ["pre quattro cinque sei", "post new"])
+
     def test_merge_regression_drops_split_boundary_duplicates(self) -> None:
         existing = [
             self._segment(
@@ -787,6 +843,81 @@ class WhisperHelperTests(unittest.TestCase):
         self.assertEqual(segments[0]["start"], 101)
         self.assertEqual(segments[0]["end"], 102.4)
         self.assertEqual(segments[0]["words"], [{"word": "dentro", "start": 101, "end": 102}])
+
+    def test_extract_segments_keeps_absolute_token_offsets_that_lag_segment_start(self) -> None:
+        raw = {
+            "transcription": [
+                {
+                    "timestamps": {"from": "00:29:27,350", "to": "00:29:28,090"},
+                    "text": " le facciamo",
+                    "tokens": [
+                        {
+                            "text": " le",
+                            "timestamps": {"from": "00:29:26,130", "to": "00:29:26,230"},
+                        },
+                        {
+                            "text": " fac",
+                            "timestamps": {"from": "00:29:26,240", "to": "00:29:26,460"},
+                        },
+                        {
+                            "text": "ciamo",
+                            "timestamps": {"from": "00:29:26,460", "to": "00:29:26,840"},
+                        },
+                    ],
+                }
+            ]
+        }
+
+        segments = _extract_segments(raw, clamp_start=0, clamp_end=1800)
+
+        self.assertEqual(segments[0]["start"], 1767.35)
+        self.assertEqual(
+            segments[0]["words"],
+            [
+                {"word": "le", "start": 1766.13, "end": 1766.23},
+                {"word": "facciamo", "start": 1766.24, "end": 1766.84},
+            ],
+        )
+
+    def test_extract_segments_aligns_vad_shifted_token_timeline_to_segment(self) -> None:
+        raw = {
+            "transcription": [
+                {
+                    "timestamps": {"from": "00:29:39,930", "to": "00:29:41,210"},
+                    "text": " ma una stretta",
+                    "tokens": [
+                        {
+                            "text": " ma",
+                            "timestamps": {"from": "00:28:39,490", "to": "00:28:39,740"},
+                        },
+                        {
+                            "text": " una",
+                            "timestamps": {"from": "00:28:39,740", "to": "00:28:40,240"},
+                        },
+                        {
+                            "text": " stret",
+                            "timestamps": {"from": "00:28:40,240", "to": "00:28:40,460"},
+                        },
+                        {
+                            "text": "ta",
+                            "timestamps": {"from": "00:28:40,540", "to": "00:28:40,700"},
+                        },
+                    ],
+                }
+            ]
+        }
+
+        segments = _extract_segments(raw, offset_seconds=1774.72, clamp_start=1774.72, clamp_end=3592.22)
+
+        self.assertEqual(segments[0]["start"], 3554.65)
+        self.assertEqual(
+            segments[0]["words"],
+            [
+                {"word": "ma", "start": 3554.65, "end": 3554.9},
+                {"word": "una", "start": 3554.9, "end": 3555.4},
+                {"word": "stretta", "start": 3555.4, "end": 3555.86},
+            ],
+        )
 
     def test_extract_segments_handles_vad_relative_token_offsets(self) -> None:
         raw = {
