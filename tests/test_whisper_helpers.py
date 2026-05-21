@@ -273,6 +273,7 @@ class WhisperHelperTests(unittest.TestCase):
             input_path.write_bytes(b"audio")
             model_path = root / "model.bin"
             model_path.write_bytes(b"model")
+            (root / "whisper_output.json").write_text("{}", encoding="utf-8")
             settings = Settings(
                 whispercpp_base_dir=root,
                 whispercpp_bin=root / "whisper-cli",
@@ -335,6 +336,74 @@ class WhisperHelperTests(unittest.TestCase):
                 "stitch_methods": None,
             },
         )
+
+    def test_chunk_request_at_or_below_duration_uses_single_pass(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "audio.wav"
+            input_path.write_bytes(b"audio")
+            model_path = root / "model.bin"
+            model_path.write_bytes(b"model")
+            (root / "whisper_output.json").write_text("{}", encoding="utf-8")
+            settings = Settings(
+                whispercpp_base_dir=root,
+                whispercpp_bin=root / "whisper-cli",
+                whispercpp_models_dir=root,
+                whispercpp_vad_model=root / "vad.bin",
+                temp_dir=root,
+                default_language="it",
+                beam_size=3,
+                best_of=3,
+                chunk_seconds=1800,
+                chunk_overlap_seconds=30,
+                stitch_method="center_align",
+                repetition_guard=True,
+            )
+            base_result = {
+                "job_id": "job-1",
+                "engine": "whisper.cpp",
+                "model": "model.bin",
+                "language": "it",
+                "text": "Ciao mondo",
+                "segments": [],
+                "decode": {"beam_size": 3, "best_of": 3},
+                "metrics": {},
+            }
+
+            with patch("app.whisper.probe_duration_seconds", return_value=1800.0), \
+                patch("app.whisper._run_chunked_transcription") as chunked, \
+                patch("app.whisper.run_vad_speech_segments") as vad_plan, \
+                patch("app.whisper._start_whisper", return_value=object()), \
+                patch("app.whisper._capture_process", return_value=0), \
+                patch("app.whisper.normalize_whisper_json", return_value=base_result):
+                result = run_transcription(
+                    job_id="job-1",
+                    job_dir=root,
+                    input_path=input_path,
+                    settings=settings,
+                    model_path=model_path,
+                    language="it",
+                    beam_size=3,
+                    best_of=3,
+                    vad_threshold=0.1,
+                    vad_max_speech_duration_s=3600,
+                    vad_min_silence_duration_ms=2000,
+                    vad_speech_pad_ms=400,
+                    chunk_seconds=1800,
+                    chunk_overlap_seconds=30,
+                    stitch_method="center_align",
+                    stitch_methods=["center_align"],
+                    repetition_guard=True,
+                    set_progress=lambda _progress: None,
+                )
+                self.assertFalse((root / "chunks").exists())
+
+        chunked.assert_not_called()
+        vad_plan.assert_not_called()
+        self.assertNotIn("stitch_variants", result)
+        self.assertEqual(result["decode"]["chunking"]["enabled"], False)
 
     def test_merge_chunk_segments_dedupes_overlap(self) -> None:
         existing = [

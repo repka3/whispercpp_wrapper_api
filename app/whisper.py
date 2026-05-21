@@ -220,7 +220,7 @@ def run_transcription(
         chunk_overlap_seconds = max(chunk_seconds - 1, 0)
     stitch_method = stitch_utils.normalize_stitch_method(stitch_method, settings.stitch_method)
 
-    if chunk_seconds > 0:
+    if chunk_seconds > 0 and audio_duration_seconds > chunk_seconds:
         return _run_chunked_transcription(
             job_id=job_id,
             job_dir=job_dir,

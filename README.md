@@ -8,7 +8,7 @@ Set `WHISPERCPP_BASE_DIR` to the local `whisper.cpp` checkout:
 
 ```env
 WHISPERCPP_BASE_DIR=/path/to/whisper.cpp
-WHISPERCPP_CHUNK_SECONDS=0
+WHISPERCPP_CHUNK_SECONDS=1800
 WHISPERCPP_CHUNK_OVERLAP_SECONDS=30
 WHISPERCPP_STITCH_METHOD=center_align
 WHISPERCPP_REPETITION_GUARD=true
@@ -71,7 +71,9 @@ GET /jobs
 `chunk_seconds` controls whether chunking is enabled.
 
 - `chunk_seconds = 0`: run one full-file transcription pass.
-- `chunk_seconds > 0`: split the audio into chunks and combine the chunk results.
+- `chunk_seconds > 0`: split the audio into chunks and combine the chunk results only when the audio is longer than `chunk_seconds`.
+
+The default is `1800` seconds. Files up to and including that duration still use the same single-pass path as `chunk_seconds = 0`: no chunk-planning VAD pre-pass, no temporary chunk extraction, and no stitching.
 
 `vad_threshold` is used by `whisper-cli` while transcribing each full file or chunk.
 `vad_cut_threshold` is used only for the pre-cut planning pass. This lets transcription stay sensitive, for example `0.01`, while cut planning uses a stricter threshold, for example `0.5`, so silence gaps are easier to find.
