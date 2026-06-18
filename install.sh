@@ -5,6 +5,8 @@ cd "$(dirname "$0")"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR=".venv"
+ENV_FILE=".env"
+DEFAULT_WHISPERCPP_BASE_DIR="$(cd .. && pwd)/whisper.cpp"
 PYTHON_REQUIREMENT="Python 3.10, 3.11, or 3.12"
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
@@ -49,4 +51,19 @@ fi
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
 "$VENV_DIR/bin/python" -m pip install -r requirements.txt
 
+cat > "$ENV_FILE" <<ENV
+WHISPERCPP_BASE_DIR=$DEFAULT_WHISPERCPP_BASE_DIR
+
+# Optional runtime defaults
+WHISPERCPP_TEMP_DIR=
+WHISPERCPP_DEFAULT_LANGUAGE=it
+WHISPERCPP_BEAM_SIZE=3
+WHISPERCPP_BEST_OF=3
+WHISPERCPP_CHUNK_SECONDS=1800
+WHISPERCPP_CHUNK_OVERLAP_SECONDS=30
+WHISPERCPP_STITCH_METHOD=center_align
+WHISPERCPP_REPETITION_GUARD=true
+ENV
+
+echo "Wrote fresh $ENV_FILE with WHISPERCPP_BASE_DIR=$DEFAULT_WHISPERCPP_BASE_DIR"
 echo "Install complete. Start the app with ./run_app.sh"
